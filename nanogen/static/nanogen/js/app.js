@@ -415,6 +415,42 @@ document.addEventListener('DOMContentLoaded', () => {
         renderPromptGenView();
     };
 
+    window.addMjOption = async (category) => {
+        const label = prompt("Enter new option name:");
+        if (!label) return;
+
+        try {
+            const res = await fetch('/api/prompt/option/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ category, label })
+            });
+            const data = await res.json();
+            if (data.success) {
+                await loadMjPresets();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        } catch (e) {
+            alert('Network error: ' + e);
+        }
+    };
+
+    window.deleteMjOption = async (id) => {
+        if (!confirm('Delete this option?')) return;
+        try {
+            const res = await fetch(`/api/prompt/option/${id}/delete`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data.success) {
+                await loadMjPresets();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        } catch (e) {
+            alert('Network error: ' + e);
+        }
+    };
+
     const renderPromptGenView = () => {
 
         // Helper for Multi-Select Chips with Edit Controls
@@ -684,7 +720,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/prompt/midjourney', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(window.promptGenState)
+                body: JSON.stringify({
+                    ...window.promptGenState,
+                    config: state.config // Pass global config (resolution, AR)
+                })
             });
             const data = await response.json();
 

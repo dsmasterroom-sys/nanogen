@@ -163,6 +163,7 @@ def generate_midjourney_prompt(data):
     Generates a Midjourney prompt based on 5-step expert structure.
     """
     subject = data.get('subject', '')
+    config = data.get('config', {})  # Extract config
     
     # Step 0: Basic Info
     species = data.get('species', 'Human')
@@ -198,19 +199,28 @@ def generate_midjourney_prompt(data):
     character_details = ", ".join(data.get('character_details', []))
     env_details = ", ".join(data.get('env_details', []))
 
+    # Append Resolution to global details for valid prompt inclusion
+    resolution = config.get('resolution', '')
+    if resolution == '2K':
+        global_details += ", 2k resolution, high quality"
+    elif resolution == '4K':
+        global_details += ", 4k resolution, ultra high definition, extremely detailed, 8k"
+
+    # Construct System Instruction
     system_instruction = """
     You are an expert Midjourney Portrait Prompt Engineer.
-    Convert user inputs into a high-end, photorealistic prompt (v6.1).
+    Convert user inputs into a high-end, photorealistic prompt.
     
     Structure:
-    [Subject + Characteristics + Expression] + [Action/Pose] + [Clothing/Decor] + [Environment] + [Lighting & Atmosphere] + [Camera/Angle] + [Style/Quality]
+    /imagine prompt: [Subject + Characteristics + Expression] + [Action/Pose] + [Clothing/Decor] + [Environment] + [Lighting & Atmosphere] + [Camera/Angle] + [Style/Quality]
 
     Rules:
     1. Translate Korean to English.
     2. Write a natural, partially descriptive paragraph.
     3. Ensure technical keywords (camera, lighting) are placed effectively.
-    4. Output format: "/imagine prompt: [PROMPT] --v 6.1 --ar 3:4"(or user specified AR).
-    5. Prioritize "Photorealism" and "Skin Texture" details if style implies it.
+    4. Do NOT include any --v parameter (e.g. --v 6.0, --v 6.1) unless the user explicitly asked for it in the context.
+    5. Do NOT include --ar parameter in the generated text; the system will append it.
+    6. Prioritize "Photorealism" and "Skin Texture" details if style implies it.
     """
 
     user_message = f"""
@@ -235,21 +245,34 @@ def generate_midjourney_prompt(data):
     """
 
     try:
-        # NOTE: Updated to use GOOGLE_API_KEY as requested
-        api_key = os.environ.get("GOOGLE_API_KEY")
+        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
         if not api_key:
-             raise ValueError("GOOGLE_API_KEY not found in .env")
+             raise ValueError("API Key not found in .env")
 
         client = genai.Client(api_key=api_key)
-        # using Gemini Flash Latest (likely 1.5 or stable) to bypass 2.0 quota limits
         response = client.models.generate_content(
-            model="gemini-flash-latest",
+            model="gemini-1.5-flash", # Revert to 1.5-flash for stability/quota
             contents=user_message,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction
             )
         )
-        return response.text.strip()
+        
+        generated_text = response.text.strip()
+        
+        # Post-Processing: Append AR from config
+        ar = config.get('aspectRatio', '')
+        if ar:
+            # Ensure no duplicate --ar
+            if "--ar" not in generated_text:
+                generated_text += f" --ar {ar}"
+        
+        # Double check to remove --v if AI hallucinates it
+        import re
+        generated_text = re.sub(r'--v\s+[0-9.]+', '', generated_text).strip()
+
+        return generated_text
+
     except Exception as e:
         print(f"Gemini Prompt Gen Error: {e}")
         return f"Error generating prompt: {str(e)}"
