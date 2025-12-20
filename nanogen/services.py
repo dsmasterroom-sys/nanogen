@@ -54,7 +54,7 @@ def process_reference_image(img_str):
         print(f"Error processing reference image: {e}")
         return None, None
 
-def generate_image_with_gemini(prompt, config, reference_images=None):
+def generate_image_with_gemini(prompt, config, reference_images=None, mask_image=None):
     """
     Generates an image using Gemini 3 Pro.
     
@@ -62,12 +62,10 @@ def generate_image_with_gemini(prompt, config, reference_images=None):
         prompt (str): The text prompt.
         config (dict): Configuration containing aspectRatio, imageSize, useGrounding.
         reference_images (list): List of base64 data URIs.
-    
-    Returns:
-        str: Base64 data URI of the generated image.
+        mask_image (str): Base64 data URI of the mask image (white strokes on transparent/black).
     """
     client = get_ai_client()
-    model_id = 'gemini-3-pro-image-preview'
+    model_id = 'gemini-3-pro-image-preview' # Nanobanana 3 Pro (Imagen 3)
     
     reference_images = reference_images or []
     
@@ -84,78 +82,88 @@ def generate_image_with_gemini(prompt, config, reference_images=None):
         processed_bytes, processed_mime = process_reference_image(img_str)
         if processed_bytes:
             parts.append(types.Part.from_bytes(data=processed_bytes, mime_type=processed_mime))
-    
-    # 2. Add text prompt
-    parts.append(types.Part.from_text(text=prompt))
-    
-    try:
-        # Configuration for Gemini 3 Pro Image generation
-        # We simplify the config to avoid SDK errors and pass aspect ratio via prompt.
-        
-        print(f"Generating with prompt: {prompt}")
-        print(f"Number of reference images: {len(reference_images)}")
-        
-        # Append aspect ratio and resolution
-        suffixes = []
-        if config.get('aspectRatio'):
-             suffixes.append(f"--aspect {config.get('aspectRatio')}")
-        
-        resolution = config.get('resolution')
-        if resolution == '2K':
-            suffixes.append("2k resolution, high quality")
-        elif resolution == '4K':
-            suffixes.append("4k resolution, ultra high definition, extremely detailed")
-        
-        final_prompt = prompt
-        if suffixes:
-            final_prompt = f"{prompt} {', '.join(suffixes)}"
 
-        parts[-1] = types.Part.from_text(text=final_prompt)
+    # 2. Add Mask Image if present
+    if mask_image:
+        processed_mask_bytes, processed_mask_mime = process_reference_image(mask_image)
+        if processed_mask_bytes:
+            parts.append(types.Part.from_bytes(data=processed_mask_bytes, mime_type=processed_mask_mime))
+            print("Mask image appended to parts.")
+    
+    # 3. Add text prompt
+    # Append instructions for handling mask if present
+    final_prompt = prompt
+    if mask_image:
+        # Stronger instruction for Inpainting / Mask adherence
+        final_prompt = (
+            f"[INPAINTING TASK]\n"
+            f"User Prompt: {prompt}\n"
+            f"STRICT INSTRUCTION: A mask image has been provided (Red = Edit, Transparent = Keep). "
+            f"You MUST ONLY change the content within the masked semi-transparent red area based on the User Prompt. "
+            f"The rest of the image (transparent areas in the mask) MUST remain pixel-perfect identical to the original reference image. "
+            f"Do not alter the background, face, or any unmasked details. "
+            f"Seamlessly blend the new content into the masked region."
+        )
+
+    print(f"Generating with prompt: {final_prompt}")
+    print(f"Number of reference images: {len(reference_images)}")
+    
+    # Append aspect ratio and resolution
+    suffixes = []
+    if config.get('aspectRatio'):
+            suffixes.append(f"--aspect {config.get('aspectRatio')}")
+    
+    resolution = config.get('resolution')
+    if resolution == '2K':
+        suffixes.append("2k resolution, high quality")
+    elif resolution == '4K':
+        suffixes.append("4k resolution, ultra high definition, extremely detailed")
+    
+    if suffixes:
+        final_prompt = f"{final_prompt} {', '.join(suffixes)}"
+
+    parts.append(types.Part.from_text(text=final_prompt))
              
-        # Execute generation
-        try:
-            response = client.models.generate_content(
-                model=model_id,
-                contents=[types.Content(parts=parts)],
-                config=types.GenerateContentConfig(
-                    tools=tools if tools else None,
-                )
+    # Execute generation
+    try:
+        response = client.models.generate_content(
+            model=model_id,
+            contents=[types.Content(parts=parts)],
+            config=types.GenerateContentConfig(
+                tools=tools if tools else None,
             )
+        )
 
-        except errors.ServerError as e:
-            print(f"GOOGLE API SERVER ERROR: {e}")
-            # Handle 503 and 500 specifically
-            if e.code == 503 or 'overloaded' in str(e).lower():
-                raise ValueError("Google AI Server is currently busy (Overloaded). Please try again in about 1 minute.")
-            if e.code == 500:
-                raise ValueError("Google AI Server Internal Error. This might be due to complex prompt or large reference images. Try reducing the number of reference images or simplifying the prompt.")
-            raise e
-        except Exception as api_error:
-            print(f"GOOGLE API CALL FAILED: {api_error}")
-            # Raise specifics if possible
-            raise api_error
-        
-        # Parse response
-        if response.candidates:
-            for candidate in response.candidates:
-                for part in candidate.content.parts:
-                    if part.inline_data:
-                        mime_type = part.inline_data.mime_type
-                        data = part.inline_data.data
-                        # data is bytes in Python SDK usually? Or base64 string?
-                        # In new SDK, inline_data.data is usually bytes.
-                        b64_data = base64.b64encode(data).decode('utf-8')
-                        return f"data:{mime_type};base64,{b64_data}"
-        
-        print("Response received but no candidates/images found.")
-        print(response)
-        raise ValueError("No image found in response.")
-
-    except Exception as e:
-        print(f"Gemini Generation Error: {e}")
-        import traceback
-        traceback.print_exc()
+    except errors.ServerError as e:
+        print(f"GOOGLE API SERVER ERROR: {e}")
+        # Handle 503 and 500 specifically
+        if e.code == 503 or 'overloaded' in str(e).lower():
+            raise ValueError("Google AI Server is currently busy (Overloaded). Please try again in about 1 minute.")
+        if e.code == 500:
+            raise ValueError("Google AI Server Internal Error. This might be due to complex prompt or large reference images. Try reducing the number of reference images or simplifying the prompt.")
         raise e
+    except Exception as api_error:
+        print(f"GOOGLE API CALL FAILED: {api_error}")
+        # Raise specifics if possible
+        raise api_error
+    
+    # Parse response
+    if response.candidates:
+        for candidate in response.candidates:
+            for part in candidate.content.parts:
+                if part.inline_data:
+                    mime_type = part.inline_data.mime_type
+                    data = part.inline_data.data
+                    # data is bytes in Python SDK usually? Or base64 string?
+                    # In new SDK, inline_data.data is usually bytes.
+                    b64_data = base64.b64encode(data).decode('utf-8')
+                    return f"data:{mime_type};base64,{b64_data}"
+    
+    print("Response received but no candidates/images found.")
+    print(response)
+    raise ValueError("No image found in response.")
+
+
 
 
 def generate_midjourney_prompt(data):

@@ -42,7 +42,8 @@ document.addEventListener('DOMContentLoaded', () => {
         config: {
             aspectRatio: '1:1',
             resolution: '1K',
-            useGrounding: false
+            useGrounding: false,
+            showBrushTools: true
         },
         referenceImage: null,
         composition: {
@@ -56,8 +57,17 @@ document.addEventListener('DOMContentLoaded', () => {
         isGenerating: false,
         currentImage: null,
         presets: [],
-        isEditingPreset: false
+        isEditingPreset: false,
+        // New: Generation Mode multi-image state
+        generation: {
+            image1: null,
+            image2: null
+        },
+        maskImage: null,
+        maskSource: null // e.g., 'composition-model'
     };
+
+    let activeMaskTarget = null; // Temp storage for currently editing mask source
 
     // Elements
     const els = {
@@ -65,6 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
         aspectBtns: document.querySelectorAll('.aspect-btn'),
         resolutionBtns: document.querySelectorAll('.resolution-btn'),
         groundingToggle: document.getElementById('useGrounding'),
+        brushToggle: document.getElementById('showBrushTools'),
         promptInput: document.getElementById('promptInput'),
         promptLength: document.getElementById('promptLength'),
         generateBtn: document.getElementById('generateBtn'),
@@ -296,14 +307,7 @@ document.addEventListener('DOMContentLoaded', () => {
         els.viewContainer.innerHTML = '';
 
         if (state.mode === 'generation') {
-            els.viewContainer.innerHTML = `
-                <div class="flex flex-col items-center justify-center text-zinc-600 gap-4 opacity-50 select-none">
-                   <div class="w-24 h-24 rounded-3xl border-2 border-dashed border-zinc-700 flex items-center justify-center bg-zinc-900/30">
-                     <i data-lucide="image" class="w-10 h-10"></i>
-                   </div>
-                   <p class="text-lg font-light">Enter a prompt to start generating</p>
-                </div>
-            `;
+            renderGenerationView();
         } else if (state.mode === 'composition') {
             renderCompositionView();
         } else if (state.mode === 'identity_swap') {
@@ -794,6 +798,57 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
         attachUploadListeners('swap-scene-upload', 'identitySwap', 'scene');
         attachUploadListeners('swap-face-upload', 'identitySwap', 'face');
+        attachUploadListeners('swap-scene-upload', 'identitySwap', 'scene');
+        attachUploadListeners('swap-face-upload', 'identitySwap', 'face');
+    };
+
+    // New: Render Generation View (Similar to Composition)
+    const renderGenerationView = () => {
+        // If we have a result, show it? Or show side-by-side?
+        // Current logic for other modes: show result heavily.
+        // But user wants upload boxes.
+        // Let's split screen if result exists, or full upload if not.
+
+        const showResult = !!state.currentImage;
+
+        els.viewContainer.innerHTML = `
+            <div class="flex flex-col h-full w-full">
+                <!-- Result Area (only if generated) -->
+                ${showResult ? `
+                    <div class="flex-1 min-h-0 flex flex-col p-6 bg-zinc-950/50 border-b border-zinc-800">
+                        <div class="flex justify-between items-center mb-4">
+                            <span class="text-sm font-medium text-zinc-400 uppercase tracking-wider">Generated Result</span>
+                            <div class="flex gap-2">
+                                <button onclick="window.saveToLibrary()" class="text-xs bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-1.5 rounded-lg border border-zinc-700 flex items-center gap-2 transition-colors">
+                                    <i data-lucide="save" class="w-3 h-3"></i> Save to Library
+                                </button>
+                                <a href="${state.currentImage}" download="generated.png" class="text-xs bg-yellow-600 hover:bg-yellow-500 text-black font-semibold px-3 py-1.5 rounded-lg flex items-center gap-2 transition-colors">
+                                    <i data-lucide="download" class="w-3 h-3"></i> Download
+                                </a>
+                            </div>
+                        </div>
+                        <div class="flex-1 relative rounded-xl overflow-hidden border border-zinc-800 bg-black group">
+                             <img src="${state.currentImage}" class="w-full h-full object-contain">
+                             <div class="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors pointer-events-none"></div>
+                        </div>
+                    </div>
+                ` : ''}
+
+                <!-- Upload Area (Reference Images) -->
+                <div class="${showResult ? 'h-1/3 min-h-[200px]' : 'flex-1'} p-6 flex flex-col md:flex-row gap-6 w-full max-w-6xl mx-auto">
+                    <div class="flex-1 flex flex-col md:flex-row gap-6 h-full">
+                        <!-- Image 1 -->
+                         ${createUploadBox('gen-img1-upload', 'Reference Image 1', 'image', 'generation', 'image1', 'Upload main reference or base image')}
+                        
+                        <!-- Image 2 -->
+                         ${createUploadBox('gen-img2-upload', 'Reference Image 2', 'layers', 'generation', 'image2', 'Upload secondary reference or style image')}
+                    </div>
+                </div>
+            </div>
+        `;
+
+        attachUploadListeners('gen-img1-upload', 'generation', 'image1');
+        attachUploadListeners('gen-img2-upload', 'generation', 'image2');
     };
 
     const renderLibraryView = async () => {
@@ -1016,9 +1071,9 @@ document.addEventListener('DOMContentLoaded', () => {
         let inputId = null;
         if (activeUploadTarget.key === 'referenceImage') inputId = 'referenceInput';
         else if (activeUploadTarget.key === 'composition') {
-            inputId = activeUploadTarget.subKey === 'model' ? 'compModel' : 'compGarment';
+            inputId = activeUploadTarget.subKey === 'model' ? 'comp-model-upload' : 'comp-garment-upload';
         } else if (activeUploadTarget.key === 'identitySwap') {
-            inputId = activeUploadTarget.subKey === 'scene' ? 'swapScene' : 'swapFace';
+            inputId = activeUploadTarget.subKey === 'scene' ? 'swap-scene-upload' : 'swap-face-upload';
         }
 
         if (inputId) {
@@ -1051,9 +1106,39 @@ document.addEventListener('DOMContentLoaded', () => {
         openSourceModal('referenceImage');
     });
 
+    // Proxy function to start masking by key
+    window.startMaskingByKey = (key, subKey) => {
+        // Handle stringified null/undefined from HTML template
+        let effectiveSubKey = subKey;
+        if (subKey === 'null' || subKey === 'undefined') effectiveSubKey = null;
+
+        try {
+            const image = effectiveSubKey ? state[key][effectiveSubKey] : state[key];
+            if (image) {
+                // Set active target
+                activeMaskTarget = { key, subKey: effectiveSubKey };
+                window.openMaskEditor(image);
+            } else {
+                console.error("Masking Error: Image not found for", key, effectiveSubKey);
+                alert("Could not load image for editing.");
+            }
+        } catch (e) {
+            console.error("Masking Exception:", e);
+            alert("Error opening mask editor: " + e.message);
+        }
+    };
+
     const createUploadBox = (id, label, iconName, imageStateKey, subKey, helpText) => {
         const image = subKey ? state[imageStateKey][subKey] : state[imageStateKey];
         const hasImage = !!image;
+
+        // Determine if this box supports masking
+        // Determine if this box supports masking
+        let canMask = state.config.showBrushTools;
+
+        // Check if this specific box is the one masked
+        const myListId = `${imageStateKey}-${subKey}`;
+        const isMasked = canMask && state.maskImage && state.maskSource === myListId;
 
         // Note: onclick handler calls openSourceModal now
         return `
@@ -1067,12 +1152,32 @@ document.addEventListener('DOMContentLoaded', () => {
                  
                  ${hasImage ? `
                      <img src="${image}" class="w-full h-full object-contain" />
+                     
+                     ${isMasked ? `
+                        <!-- Red Mask Overlay -->
+                        <div class="absolute inset-0 z-0 pointer-events-none" 
+                             style="-webkit-mask-image: url(${state.maskImage}); mask-image: url(${state.maskImage}); -webkit-mask-size: contain; mask-size: contain; mask-position: center; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat; background-color: rgba(255, 0, 0, 0.4);">
+                        </div>
+                     ` : ''}
+
                      <button  id="${id}-remove"
-                        class="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/80 text-white rounded-full transition-colors group-hover:opacity-100 opacity-0"
+                        class="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/80 text-white rounded-full transition-colors group-hover:opacity-100 opacity-0 z-10"
                         onclick="event.stopPropagation(); window.removeImage('${imageStateKey}', '${subKey}')"
                      >
                        <i data-lucide="x" class="w-4 h-4"></i>
                      </button>
+
+                     ${canMask ? `
+                         <button
+                            class="absolute bottom-2 right-2 p-1.5 ${isMasked ? 'bg-yellow-500 text-black' : 'bg-black/50 text-white hover:bg-black/80'} rounded-full transition-colors group-hover:opacity-100 opacity-0 flex items-center gap-1 z-10"
+                            onclick="event.stopPropagation(); window.startMaskingByKey('${imageStateKey}', '${subKey}')"
+                            title="Mask / Edit"
+                         >
+                           <i data-lucide="${isMasked ? 'check' : 'brush'}" class="w-4 h-4"></i>
+                         </button>
+                         ${isMasked ? '<div class="absolute top-2 left-2 bg-yellow-500 text-black text-[10px] font-bold px-2 py-0.5 rounded-full z-10">MASKED</div>' : ''}
+                     ` : ''}
+
                  ` : `
                    <div class="absolute inset-0 flex flex-col items-center justify-center text-zinc-600 gap-2 p-4 text-center pointer-events-none">
                      <div class="p-3 rounded-full bg-zinc-800/50">
@@ -1091,6 +1196,13 @@ document.addEventListener('DOMContentLoaded', () => {
     window.removeImage = (key, subKey) => {
         if (subKey !== 'undefined' && subKey !== 'null') state[key][subKey] = null;
         else state[key] = null;
+
+        // Also reset mask if we are removing the masked image
+        // Simplest: Reset mask whenever any image is removed, or check specifics. 
+        // For now: Reset global mask state to be safe.
+        state.maskImage = null;
+        state.maskSource = null;
+
         renderView();
     }
 
@@ -1123,7 +1235,8 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Attachment Area visibility
-        if (state.mode === 'generation') {
+        // Legacy: Hidden for now in favor of Central UI for Generation
+        if (state.mode === 'generation_legacy') { // Renamed to disable
             els.attachmentArea.classList.remove('hidden');
         } else {
             els.attachmentArea.classList.add('hidden');
@@ -1148,12 +1261,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Reference Preview
-        if (state.referenceImage && state.mode === 'generation') {
-            els.referencePreview.classList.remove('hidden');
-            els.referencePreviewImg.src = state.referenceImage;
-        } else {
-            els.referencePreview.classList.add('hidden');
-        }
+        // Legacy: Hidden for Generation (Central UI used instead)
+        els.referencePreview.classList.add('hidden');
     };
 
     // Event Listeners - Init
@@ -1161,6 +1270,9 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.addEventListener('click', () => {
             state.mode = btn.dataset.mode;
             state.currentImage = null;
+            // Clear mask on mode switch to prevent cross-contamination
+            state.maskImage = null;
+            state.maskSource = null;
             renderView();
             renderPresets();
         });
@@ -1197,6 +1309,13 @@ document.addEventListener('DOMContentLoaded', () => {
         state.config.useGrounding = e.target.checked;
     });
 
+    if (els.brushToggle) {
+        els.brushToggle.addEventListener('change', (e) => {
+            state.config.showBrushTools = e.target.checked;
+            renderView();
+        });
+    }
+
     els.promptInput.addEventListener('input', (e) => {
         state.prompt = e.target.value;
         els.promptLength.textContent = state.prompt.length;
@@ -1207,15 +1326,155 @@ document.addEventListener('DOMContentLoaded', () => {
         renderView();
     });
 
+    // --- Mask Editor Logic ---
+    const maskEls = {
+        modal: document.getElementById('maskEditorModal'),
+        canvas: document.getElementById('maskCanvas'),
+        ctx: document.getElementById('maskCanvas').getContext('2d'),
+        targetImg: document.getElementById('maskTargetImage'),
+        brushSize: document.getElementById('brushSize'),
+        clearBtn: document.getElementById('clearMaskBtn'),
+        saveBtn: document.getElementById('saveMaskBtn'),
+        closeBtn: document.getElementById('closeMaskEditorBtn'),
+        container: document.getElementById('maskCanvasContainer')
+    };
+
+    let isDrawing = false;
+    let lastX = 0;
+    let lastY = 0;
+
+    window.openMaskEditor = (imageSource) => {
+        let src = imageSource;
+        if (!src || typeof src !== 'string') {
+            src = state.referenceImage;
+        }
+        if (!src) return;
+
+        maskEls.modal.classList.remove('hidden');
+        maskEls.targetImg.src = src;
+
+        // Wait for image load
+        maskEls.targetImg.onload = () => {
+            maskEls.canvas.width = maskEls.targetImg.width;
+            maskEls.canvas.height = maskEls.targetImg.height;
+            maskEls.ctx.clearRect(0, 0, maskEls.canvas.width, maskEls.canvas.height);
+
+            // Set canvas visual opacity to 0.5 to allow seeing through the red mask
+            maskEls.canvas.style.opacity = '0.5';
+
+            // If we have an existing mask for this source, load and colorize it
+            let existingMask = null;
+            if (activeMaskTarget) {
+                const id = `${activeMaskTarget.key}-${activeMaskTarget.subKey}`;
+                if (state.maskSource === id) existingMask = state.maskImage;
+            } else if (state.mode === 'generation' && state.maskSource === 'referenceImage-null') {
+                existingMask = state.maskImage;
+            }
+
+            if (existingMask) {
+                const img = new Image();
+                img.onload = () => {
+                    maskEls.ctx.drawImage(img, 0, 0);
+                    // Convert White (Backend format) to Red (Display format)
+                    const imageData = maskEls.ctx.getImageData(0, 0, maskEls.canvas.width, maskEls.canvas.height);
+                    const data = imageData.data;
+                    for (let i = 0; i < data.length; i += 4) {
+                        // If pixel has alpha, make it Solid Red (opacity handled by canvas CSS)
+                        if (data[i + 3] > 0) {
+                            data[i] = 255;   // R
+                            data[i + 1] = 0;   // G
+                            data[i + 2] = 0;   // B
+                            data[i + 3] = 255; // Alpha 1.0 (Solid)
+                        }
+                    }
+                    maskEls.ctx.putImageData(imageData, 0, 0);
+                };
+                img.src = existingMask;
+            }
+        };
+    };
+
+    window.closeMaskEditor = () => {
+        maskEls.modal.classList.add('hidden');
+        maskEls.canvas.style.opacity = '1'; // Reset
+        activeMaskTarget = null; // Reset target on close? Or Keep? Better reset to avoid stale state.
+    };
+
+    // Drawing Events
+    const getPos = (e) => {
+        const rect = maskEls.canvas.getBoundingClientRect();
+        const scaleX = maskEls.canvas.width / rect.width;
+        const scaleY = maskEls.canvas.height / rect.height;
+        return {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY
+        };
+    };
+
+    maskEls.canvas.addEventListener('mousedown', (e) => {
+        isDrawing = true;
+        const pos = getPos(e);
+        lastX = pos.x;
+        lastY = pos.y;
+    });
+
+    maskEls.canvas.addEventListener('mousemove', (e) => {
+        if (!isDrawing) return;
+        const pos = getPos(e);
+
+        maskEls.ctx.beginPath();
+        maskEls.ctx.moveTo(lastX, lastY);
+        maskEls.ctx.lineTo(pos.x, pos.y);
+        // Solid Red brush (opacity handled by canvas style)
+        maskEls.ctx.strokeStyle = '#ff0000';
+        maskEls.ctx.lineCap = 'round';
+        maskEls.ctx.lineJoin = 'round';
+        maskEls.ctx.lineWidth = maskEls.brushSize.value;
+        maskEls.ctx.stroke();
+
+        lastX = pos.x;
+        lastY = pos.y;
+    });
+
+    window.addEventListener('mouseup', () => isDrawing = false);
+
+    // Toolbar Actions
+    maskEls.clearBtn.addEventListener('click', () => {
+        maskEls.ctx.clearRect(0, 0, maskEls.canvas.width, maskEls.canvas.height);
+    });
+
+    maskEls.saveBtn.addEventListener('click', () => {
+        // Save RED mask (as drawn) because Backend was updated to expect Red
+        state.maskImage = maskEls.canvas.toDataURL('image/png');
+
+        if (activeMaskTarget) {
+            state.maskSource = `${activeMaskTarget.key}-${activeMaskTarget.subKey}`;
+        } else {
+            // Fallback
+            if (state.mode === 'generation') state.maskSource = 'referenceImage-null';
+        }
+
+        window.closeMaskEditor();
+        renderView();
+    });
+
+    maskEls.closeBtn.addEventListener('click', window.closeMaskEditor);
+
+    // Modify els.generateBtn listener to include maskImage
     els.generateBtn.addEventListener('click', async () => {
         if (!state.prompt) {
             showError("Please enter a text prompt.");
             return;
         }
-
         let refImages = [];
-        if (state.mode === 'generation' && state.referenceImage) {
-            refImages.push(state.referenceImage);
+        if (state.mode === 'generation') {
+            // New Multi-Image Logic
+            if (state.generation.image1) refImages.push(state.generation.image1);
+            if (state.generation.image2) refImages.push(state.generation.image2);
+            // Legacy fallback (should ideally be removed, but kept for safety if state.referenceImage is somehow set)
+            if (state.referenceImage && !state.generation.image1 && !state.generation.image2) {
+                refImages.push(state.referenceImage);
+            }
         } else if (state.mode === 'composition') {
             if (!state.composition.model || !state.composition.garment) {
                 showError("Please upload both model and garment images.");
@@ -1233,16 +1492,21 @@ document.addEventListener('DOMContentLoaded', () => {
         setGenerating(true);
 
         try {
+            const payload = {
+                prompt: state.prompt,
+                config: state.config,
+                referenceImages: refImages
+            };
+
+            // Add mask if it exists (Generic)
+            if (state.maskImage) {
+                payload.maskImage = state.maskImage;
+            }
+
             const response = await fetch('/api/generate', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    prompt: state.prompt,
-                    config: state.config,
-                    referenceImages: refImages
-                })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
             });
 
             const data = await response.json();

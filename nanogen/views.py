@@ -290,12 +290,13 @@ def generate_image_view(request):
             prompt = data.get('prompt')
             config = data.get('config', {})
             reference_images = data.get('referenceImages', [])
+            mask_image = data.get('maskImage', None)
             
             if not prompt:
                 return JsonResponse({'error': 'Prompt is required'}, status=400)
             
             # Generate image (returns base64 data URI)
-            image_b64_uri = generate_image_with_gemini(prompt, config, reference_images)
+            image_b64_uri = generate_image_with_gemini(prompt, config, reference_images, mask_image)
             
             # Save to Database
             try:

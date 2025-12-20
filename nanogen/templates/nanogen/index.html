@@ -166,6 +166,20 @@
                     </label>
                 </div>
             </div>
+
+            <!-- Brush Tools Toggle -->
+            <div class="space-y-3">
+                <label class="text-xs font-medium text-zinc-500 uppercase tracking-wider block">Editor Tools</label>
+                <div class="flex items-center justify-between p-3 rounded-xl bg-zinc-900/50 border border-zinc-800">
+                    <span class="text-sm">Enable Brush</span>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" id="showBrushTools" class="sr-only peer" checked>
+                        <div
+                            class="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-yellow-500">
+                        </div>
+                    </label>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -260,6 +274,44 @@
                 </div>
             </div>
 
+            <!-- Mask Editor Modal -->
+            <div id="maskEditorModal"
+                class="hidden fixed inset-0 z-[70] bg-black/95 flex flex-col items-center justify-center p-4">
+
+                <!-- Toolbar -->
+                <div
+                    class="fixed top-4 left-1/2 -translate-x-1/2 bg-zinc-900 border border-zinc-700 rounded-full px-6 py-3 flex items-center gap-6 shadow-2xl z-[80]">
+                    <div class="flex items-center gap-3">
+                        <i data-lucide="brush" class="w-4 h-4 text-yellow-500"></i>
+                        <input type="range" id="brushSize" min="5" max="100" value="30" class="w-32 accent-yellow-500">
+                    </div>
+                    <div class="h-6 w-px bg-zinc-700"></div>
+                    <button id="clearMaskBtn"
+                        class="text-zinc-400 hover:text-white text-xs font-medium flex items-center gap-2">
+                        <i data-lucide="rotate-ccw" class="w-4 h-4"></i> Clear
+                    </button>
+                    <div class="h-6 w-px bg-zinc-700"></div>
+                    <button id="saveMaskBtn"
+                        class="text-black bg-yellow-500 hover:bg-yellow-400 font-bold text-xs px-4 py-1.5 rounded-full flex items-center gap-2 transition-all">
+                        <i data-lucide="check" class="w-4 h-4"></i> Done
+                    </button>
+                    <button id="closeMaskEditorBtn" class="ml-2 text-zinc-500 hover:text-white">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+
+                <!-- Canvas Container -->
+                <div id="maskCanvasContainer"
+                    class="relative max-w-full max-h-[85vh] border border-zinc-800 rounded-lg overflow-hidden cursor-crosshair">
+                    <img id="maskTargetImage" src="" class="max-w-full max-h-[85vh] object-contain pointer-events-none">
+                    <canvas id="maskCanvas" class="absolute inset-0 w-full h-full trigger-gpu"></canvas>
+                </div>
+
+                <div class="mt-4 text-zinc-500 text-xs text-center animate-pulse">
+                    Paint over the area you want to edit (Inpaint).
+                </div>
+            </div>
+
             <!-- Error Banner -->
             <div id="errorBanner"
                 class="hidden fixed top-4 left-1/2 -translate-x-1/2 bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg flex items-center gap-2 z-[100] max-w-lg w-full shadow-xl backdrop-blur-md">
@@ -319,7 +371,7 @@
         </div>
     </div>
 
-    <script src="{% static 'nanogen/js/app.js' %}?v=7"></script>
+    <script src="{% static 'nanogen/js/app.js' %}?v=25"></script>
     <script>
         lucide.createIcons();
     </script>
