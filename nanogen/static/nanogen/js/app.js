@@ -1130,11 +1130,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+
     const createUploadBox = (id, label, iconName, imageStateKey, subKey, helpText) => {
         const image = subKey ? state[imageStateKey][subKey] : state[imageStateKey];
         const hasImage = !!image;
 
-        // Determine if this box supports masking
         // Determine if this box supports masking
         let canMask = state.config.showBrushTools;
 
@@ -1142,12 +1142,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const myListId = `${imageStateKey}-${subKey}`;
         const isMasked = canMask && state.maskImage && state.maskSource === myListId;
 
-        // Note: onclick handler calls openSourceModal now
         return `
             <div class="flex-1 min-w-[200px] h-full flex flex-col gap-2">
                <span class="text-xs font-medium text-zinc-500 uppercase tracking-wider pl-1">${label}</span>
                <div id="${id}-wrapper"
-                 class="relative flex-1 rounded-2xl border-2 border-dashed transition-all overflow-hidden group min-h-[200px] flex flex-col ${hasImage ? 'border-zinc-800 bg-black' : 'border-zinc-800 bg-zinc-900/30 hover:bg-zinc-900/50 hover:border-zinc-700 cursor-pointer'}"
+                 class="relative flex-1 rounded-2xl border-2 border-dashed transition-all overflow-hidden group min-h-[200px] max-h-[60vh] flex flex-col ${hasImage ? 'border-zinc-800 bg-black' : 'border-zinc-800 bg-zinc-900/30 hover:bg-zinc-900/50 hover:border-zinc-700 cursor-pointer'}"
                  onclick="openSourceModal('${imageStateKey}', '${subKey}')"
                >
                  <input type="file" id="${id}" class="hidden" accept="image/*">
