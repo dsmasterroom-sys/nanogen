@@ -1074,6 +1074,8 @@ document.addEventListener('DOMContentLoaded', () => {
             inputId = activeUploadTarget.subKey === 'model' ? 'comp-model-upload' : 'comp-garment-upload';
         } else if (activeUploadTarget.key === 'identitySwap') {
             inputId = activeUploadTarget.subKey === 'scene' ? 'swap-scene-upload' : 'swap-face-upload';
+        } else if (activeUploadTarget.key === 'generation') {
+            inputId = activeUploadTarget.subKey === 'image1' ? 'gen-img1-upload' : 'gen-img2-upload';
         }
 
         if (inputId) {
