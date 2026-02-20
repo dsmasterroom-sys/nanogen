@@ -65,8 +65,15 @@ def generate_image_with_gemini(prompt, config, reference_images=None, mask_image
         mask_image (str): Base64 data URI of the mask image (white strokes on transparent/black).
     """
     client = get_ai_client()
-    # Nanobanana 3 Pro (Imagen 3) fallback defaults to 'imagen-3.0-generate-001'
-    model_id = os.environ.get('IMAGE_MODEL_ID', 'imagen-3.0-generate-001')
+    
+    # Priority: 1. Frontend config, 2. .env file, 3. Default safe model
+    env_model_id = os.environ.get('IMAGE_MODEL_ID', 'gemini-3-pro-image-preview')
+    model_id = config.get('modelId') if config.get('modelId') else env_model_id
+    
+    # Strict override: Since user's API key lacks 'imagen' billing permissions, 
+    # force any lingering 'imagen-3.0' requests (e.g. from cached nodes) to use gemini-3-pro
+    if 'imagen-3.0' in model_id:
+        model_id = 'gemini-3-pro-image-preview'
     
     reference_images = reference_images or []
     
@@ -123,10 +130,13 @@ def generate_image_with_gemini(prompt, config, reference_images=None, mask_image
     if suffixes:
         final_prompt = f"{final_prompt} {', '.join(suffixes)}"
 
+    # Always include text prompt as a part for the model.
     parts.append(types.Part.from_text(text=final_prompt))
-             
-    # Execute generation
+
+    # Execute generation based on model type
     try:
+        # Use generate_content for Gemini models (like gemini-3-pro-image-preview)
+        # Note: We pass reference images/mask and the prompt as parts.
         response = client.models.generate_content(
             model=model_id,
             contents=[types.Content(parts=parts)],
@@ -134,154 +144,152 @@ def generate_image_with_gemini(prompt, config, reference_images=None, mask_image
                 tools=tools if tools else None,
             )
         )
+        
+        # Parse response
+        if response.candidates:
+            for candidate in response.candidates:
+                if not candidate.content or not candidate.content.parts:
+                    continue
+                for part in candidate.content.parts:
+                    if part.inline_data:
+                        mime_type = part.inline_data.mime_type
+                        data = part.inline_data.data
+                        b64_data = base64.b64encode(data).decode('utf-8')
+                        return f"data:{mime_type};base64,{b64_data}"
+        
+        print("Response received but no inline_data found.")
+        print(response)
+        raise ValueError("No image found in response.")
 
     except errors.ServerError as e:
         print(f"GOOGLE API SERVER ERROR: {e}")
-        # Handle 503 and 500 specifically
         if e.code == 503 or 'overloaded' in str(e).lower():
             raise ValueError("Google AI Server is currently busy (Overloaded). Please try again in about 1 minute.")
         if e.code == 500:
-            raise ValueError("Google AI Server Internal Error. This might be due to complex prompt or large reference images. Try reducing the number of reference images or simplifying the prompt.")
+            raise ValueError("Google AI Server Internal Error. This might be due to complex prompt or large reference images.")
         raise e
     except Exception as api_error:
         print(f"GOOGLE API CALL FAILED: {api_error}")
-        # Raise specifics if possible
         raise api_error
-    
-    # Parse response
-    if response.candidates:
-        for candidate in response.candidates:
-            for part in candidate.content.parts:
-                if part.inline_data:
-                    mime_type = part.inline_data.mime_type
-                    data = part.inline_data.data
-                    # data is bytes in Python SDK usually? Or base64 string?
-                    # In new SDK, inline_data.data is usually bytes.
-                    b64_data = base64.b64encode(data).decode('utf-8')
-                    return f"data:{mime_type};base64,{b64_data}"
-    
-    print("Response received but no candidates/images found.")
-    print(response)
-    raise ValueError("No image found in response.")
 
 
 
 
 def generate_midjourney_prompt(data):
     """
-    Generates a Midjourney prompt based on 5-step expert structure.
+    Generates a high-quality Midjourney prompt using Gemini 1.5 Flash.
+    Incorporates both user text parameters and reference images.
     """
+    client = get_ai_client()
+    
+    parts = []
+    
+    # 1. Attach Reference Images if any
+    reference_images = data.get('referenceImages', [])
+    for img_str in reference_images:
+        processed_bytes, processed_mime = process_reference_image(img_str)
+        if processed_bytes:
+            parts.append(types.Part.from_bytes(data=processed_bytes, mime_type=processed_mime))
+            
+    # 2. Extract Text Inputs
     subject = data.get('subject', '')
-    config = data.get('config', {})  # Extract config
+    presets = ", ".join(data.get('presets', []))
+    config = data.get('config', {})
+    media_type = data.get('media_type', 'image')
     
-    # Step 0: Basic Info
-    species = data.get('species', 'Human')
-    animal_type = data.get('animalType', '')
-    gender = data.get('gender', 'Female')
-    
-    # Construct base subject description
-    base_subject_desc = ""
-    if species == 'Animal':
-        base_subject_desc = f"{animal_type}" if animal_type else "Animal"
-    else:
-        # For Human, use Gender
-        base_subject_desc = f"{gender}"
-
-    # Step 1: Style & Details
-    styles = ", ".join(data.get('styles', []))
-    global_details = ", ".join(data.get('global_details', []))
-    
-    # Step 2: Characteristics, Expression, Angle
-    characteristics = ", ".join(data.get('characteristics', []))
-    expression = data.get('expression', '')
-    camera_angle = data.get('camera_angle', '')
-    
-    # Step 3: Pose & Action
-    pose = data.get('pose', '')
-    action = data.get('action', '')
-    
-    # Step 4: Lighting & Atmosphere
-    lighting = data.get('lighting', '')
-    atmosphere = ", ".join(data.get('atmosphere', []))
-    
-    # Step 5: Character & Env Details
-    character_details = ", ".join(data.get('character_details', []))
-    env_details = ", ".join(data.get('env_details', []))
-
-    # Append Resolution to global details for valid prompt inclusion
     resolution = config.get('resolution', '')
-    if resolution == '2K':
-        global_details += ", 2k resolution, high quality"
-    elif resolution == '4K':
-        global_details += ", 4k resolution, ultra high definition, extremely detailed, 8k"
-
-    # Construct System Instruction
-    system_instruction = """
-    You are an expert Midjourney Portrait Prompt Engineer.
-    Convert user inputs into a high-end, photorealistic prompt.
+    ar = config.get('aspectRatio', '')
     
-    Structure:
-    /imagine prompt: [Subject + Characteristics + Expression] + [Action/Pose] + [Clothing/Decor] + [Environment] + [Lighting & Atmosphere] + [Camera/Angle] + [Style/Quality]
-
-    Rules:
-    1. Translate Korean to English.
-    2. Write a natural, partially descriptive paragraph.
-    3. Ensure technical keywords (camera, lighting) are placed effectively.
-    4. Do NOT include any --v parameter (e.g. --v 6.0, --v 6.1) unless the user explicitly asked for it in the context.
-    5. Do NOT include --ar parameter in the generated text; the system will append it.
-    6. Prioritize "Photorealism" and "Skin Texture" details if style implies it.
-    """
+    # 3. Construct the prompt instructions
+    if media_type == 'video':
+        system_instruction = """
+        You are an expert AI Video Prompt Engineer (e.g., for Runway Gen-3, Sora, or Luma).
+        Convert user inputs and reference images into a high-end, cinematic video generation prompt.
+        
+        Structure:
+        [Camera Movement] + [Subject & Action] + [Environment & Lighting] + [Cinematic Look & Film Stock]
+        
+        Rules:
+        1. Translate everything to English, producing a single dense paragraph.
+        2. Do NOT use conversational text or markdown. Output raw text ONLY.
+        3. Emphasize motion, cinematic camera angles, and dynamic lighting.
+        4. Deeply analyze provided reference images. Incorporate key visual elements into the description.
+        5. Ensure the 'User Concept' takes priority for the narrative/subject, while blending in 'Presets' seamlessly.
+        """
+    else:
+        system_instruction = """
+        You are an expert Midjourney Portrait Prompt Engineer.
+        Convert user inputs and reference images into a high-end, photorealistic Midjourney prompt.
+        
+        Structure:
+        /imagine prompt: [Subject & Physical Traits] + [Pose & Action] + [Clothing & Style] + [Environment & Setting] + [Lighting & Atmosphere] + [Camera Angle & Quality]
+        
+        Rules:
+        1. Translate everything to English, producing a single dense paragraph of descriptive keywords separated by commas.
+        2. Do NOT use conversational text or markdown. Output raw text ONLY, starting with "/imagine prompt: "
+        3. Do NOT include any --v parameter.
+        4. Do NOT include --ar parameter; it will be appended automatically.
+        5. Deeply analyze provided reference images. Incorporate key visual elements into the description.
+        6. Ensure the 'User Concept' takes priority for the narrative/subject, while blending in 'Presets' seamlessly.
+        """
 
     user_message = f"""
-    Subject Type: {base_subject_desc}
-    Additional Context: {subject}
-    
-    1. Look/Style: {styles}
-    1. Global Details: {global_details}
-    
-    2. Characteristics: {characteristics}
-    2. Expression: {expression}
-    2. Camera Angle: {camera_angle}
-    
-    3. Pose: {pose}
-    3. Action: {action}
-    
-    4. Lighting: {lighting}
-    4. Atmosphere: {atmosphere}
-    
-    5. Character Details: {character_details}
-    5. Env/Clothing Details: {env_details}
+    User Concept: {subject if subject else 'Synthesize a creative scene based on the attached images.'}
+    Presets (Styles/Keywords): {presets}
+    Target Resolution: {resolution}
     """
-
+    
+    # Text part must be appended as well
+    parts.append(types.Part.from_text(text=user_message))
+    
     try:
-        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-             raise ValueError("API Key not found in .env")
+        # Prompt model fallback chain:
+        # 1) PROMPT_MODEL_ID (if set), 2) newer defaults, 3) legacy model.
+        preferred_model = os.environ.get("PROMPT_MODEL_ID", "gemini-2.0-flash")
+        candidate_models = []
+        for m in [preferred_model, "gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
+            if m and m not in candidate_models:
+                candidate_models.append(m)
 
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-1.5-flash", # Revert to 1.5-flash for stability/quota
-            contents=user_message,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction
-            )
-        )
+        response = None
+        last_error = None
+        for model_id in candidate_models:
+            try:
+                response = client.models.generate_content(
+                    model=model_id,
+                    contents=[types.Content(parts=parts)],
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.7
+                    )
+                )
+                if response and getattr(response, "text", None):
+                    break
+            except Exception as e:
+                last_error = e
+                print(f"Prompt model failed ({model_id}): {e}")
+                continue
+
+        if not response or not getattr(response, "text", None):
+            if last_error:
+                raise last_error
+            raise ValueError("Prompt generation failed: no response text from candidate models.")
+
+        generated_text = response.text.replace('\n', ' ').strip()
         
-        generated_text = response.text.strip()
-        
-        # Post-Processing: Append AR from config
-        ar = config.get('aspectRatio', '')
-        if ar:
-            # Ensure no duplicate --ar
-            if "--ar" not in generated_text:
+        if media_type == 'image':
+            # Post-Processing: Append AR from config only for image mode
+            if ar and "--ar" not in generated_text:
                 generated_text += f" --ar {ar}"
-        
-        # Double check to remove --v if AI hallucinates it
-        import re
-        generated_text = re.sub(r'--v\s+[0-9.]+', '', generated_text).strip()
+            
+            # Remove --v if AI hallucinates it
+            import re
+            generated_text = re.sub(r'--v\s+[0-9.]+', '', generated_text).strip()
 
         return generated_text
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Gemini Prompt Gen Error: {e}")
         return f"Error generating prompt: {str(e)}"

@@ -337,6 +337,9 @@ def generate_image_view(request):
                 # If saving fails, still return the generated image but log error
                 return JsonResponse({'url': image_b64_uri})
 
+            # Non-base64 response fallback (e.g., direct URL string)
+            return JsonResponse({'url': image_b64_uri})
+
         except Exception as e:
             import traceback
             traceback.print_exc()

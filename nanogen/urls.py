@@ -23,7 +23,6 @@ urlpatterns = [
     path('api/prompt/option/<int:option_id>/edit', views.edit_midjourney_option, name='edit_midjourney_option'),
     path('api/prompt/option/<int:option_id>/delete', views.delete_midjourney_option, name='delete_midjourney_option'),
     path('api/prompt/option/reset', views.reset_midjourney_options, name='reset_midjourney_options'),
-    path('api/prompt/presets', views.get_midjourney_presets, name='get_midjourney_presets'),
 
     path('favicon.ico', views.favicon_view),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
