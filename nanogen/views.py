@@ -219,7 +219,14 @@ def reset_midjourney_options(request):
 @csrf_exempt
 def list_source_images(request):
     try:
-        images = SourceImage.objects.all().order_by('-created_at')
+        from django.core.paginator import Paginator
+        page = request.GET.get('page', 1)
+        limit = request.GET.get('limit', 20)
+        
+        images_query = SourceImage.objects.all().order_by('-created_at')
+        paginator = Paginator(images_query, limit)
+        images = paginator.get_page(page)
+        
         data = []
         for img in images:
             data.append({
@@ -227,7 +234,12 @@ def list_source_images(request):
                 'url': img.image.url,
                 'created_at': img.created_at.isoformat()
             })
-        return JsonResponse({'images': data})
+        return JsonResponse({
+            'images': data,
+            'page': images.number,
+            'num_pages': paginator.num_pages,
+            'total': paginator.count
+        })
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
@@ -338,7 +350,14 @@ def generate_image_view(request):
 @csrf_exempt
 def list_images(request):
     try:
-        images = GeneratedImage.objects.all().order_by('-created_at')
+        from django.core.paginator import Paginator
+        page = request.GET.get('page', 1)
+        limit = request.GET.get('limit', 20)
+        
+        images_query = GeneratedImage.objects.all().order_by('-created_at')
+        paginator = Paginator(images_query, limit)
+        images = paginator.get_page(page)
+        
         data = []
         for img in images:
             data.append({
@@ -347,7 +366,12 @@ def list_images(request):
                 'prompt': img.prompt,
                 'created_at': img.created_at.isoformat()
             })
-        return JsonResponse({'images': data})
+        return JsonResponse({
+            'images': data,
+            'page': images.number,
+            'num_pages': paginator.num_pages,
+            'total': paginator.count
+        })
     except Exception as e:
         print(f"Error listing images: {e}")
         return JsonResponse({'error': str(e)}, status=500)

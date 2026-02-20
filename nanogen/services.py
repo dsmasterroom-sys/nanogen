@@ -65,7 +65,8 @@ def generate_image_with_gemini(prompt, config, reference_images=None, mask_image
         mask_image (str): Base64 data URI of the mask image (white strokes on transparent/black).
     """
     client = get_ai_client()
-    model_id = 'gemini-3-pro-image-preview' # Nanobanana 3 Pro (Imagen 3)
+    # Nanobanana 3 Pro (Imagen 3) fallback defaults to 'imagen-3.0-generate-001'
+    model_id = os.environ.get('IMAGE_MODEL_ID', 'imagen-3.0-generate-001')
     
     reference_images = reference_images or []
     

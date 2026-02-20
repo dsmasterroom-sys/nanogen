@@ -851,24 +851,36 @@ document.addEventListener('DOMContentLoaded', () => {
         attachUploadListeners('gen-img2-upload', 'generation', 'image2');
     };
 
-    const renderLibraryView = async () => {
-        els.viewContainer.innerHTML = '<div class="loader"></div>';
+    // Library Pagination State
+    window.libraryState = { page: 1, hasMore: true, isLoading: false };
+
+    const renderLibraryView = async (append = false) => {
+        if (!append) {
+            window.libraryState = { page: 1, hasMore: true, isLoading: false };
+            els.viewContainer.innerHTML = '<div class="w-full h-full p-6 flex flex-col items-center"><div id="masonryGrid" class="w-full columns-2 md:columns-3 lg:columns-4 gap-4 space-y-4"></div><div id="loadMoreTrigger" class="py-8"><div class="loader"></div></div></div>';
+        }
+
+        if (window.libraryState.isLoading || !window.libraryState.hasMore) return;
+        window.libraryState.isLoading = true;
+
         try {
-            const res = await fetch('/api/images');
+            const res = await fetch(`/api/images?page=${window.libraryState.page}&limit=20`);
             const data = await res.json();
+            const grid = document.getElementById('masonryGrid');
+            const trigger = document.getElementById('loadMoreTrigger');
 
             if (data.images && data.images.length > 0) {
-                els.viewContainer.innerHTML = `
-                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 p-6 w-full h-full overflow-y-auto custom-scrollbar content-start">
-                        ${data.images.map(img => {
-                    // Safe prompt escaping
+                const html = data.images.map(img => {
                     const safePrompt = img.prompt ? img.prompt.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, ' ') : '';
                     return `
-                            <div class="relative group rounded-xl overflow-hidden aspect-square border border-zinc-800 bg-zinc-900 cursor-pointer" onclick="window.openImageModal('${img.url}', '${safePrompt}')">
-                                <img src="${img.url}" class="w-full h-full object-contain bg-black">
+                            <div class="relative group rounded-xl overflow-hidden border border-zinc-800 bg-zinc-900 cursor-pointer break-inside-avoid shadow-sm hover:shadow-yellow-500/10 transition-all duration-300 transform hover:-translate-y-1" onclick="window.openImageModal('${img.url}', '${safePrompt}')">
+                                <div class="absolute inset-0 flex items-center justify-center bg-zinc-900" id="skeleton-${img.id}">
+                                    <i data-lucide="image" class="w-8 h-8 text-zinc-700 animate-pulse"></i>
+                                </div>
+                                <img src="${img.url}" onload="document.getElementById('skeleton-${img.id}')?.remove(); this.classList.remove('opacity-0')" class="w-full h-auto object-cover bg-black opacity-0 transition-opacity duration-500">
                                 
                                 <!-- Hover Overlay for Actions -->
-                                <div class="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors"></div>
+                                <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
 
                                 <!-- Bottom Right Actions -->
                                 <div class="absolute bottom-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10" onclick="event.stopPropagation()">
@@ -880,10 +892,21 @@ document.addEventListener('DOMContentLoaded', () => {
                                     </button>
                                 </div>
                             </div>
-                        `}).join('')}
-                    </div>
-                 `;
-            } else {
+                        `}).join('');
+
+                if (grid) {
+                    grid.insertAdjacentHTML('beforeend', html);
+                }
+
+                // Pagination check
+                if (window.libraryState.page >= data.num_pages) {
+                    window.libraryState.hasMore = false;
+                    if (trigger) trigger.innerHTML = '<span class="text-zinc-600 text-xs">No more images</span>';
+                } else {
+                    window.libraryState.page++;
+                    if (trigger) trigger.innerHTML = '<button onclick="window.loadMoreLibrary()" class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">Load More</button>';
+                }
+            } else if (!append) {
                 els.viewContainer.innerHTML = `
                     <div class="w-full h-full flex flex-col items-center justify-center text-zinc-500 gap-2">
                         <i data-lucide="image" class="w-12 h-12 opacity-20"></i>
@@ -892,29 +915,74 @@ document.addEventListener('DOMContentLoaded', () => {
                  `;
             }
         } catch (e) {
-            els.viewContainer.innerHTML = `<div class="text-red-500">Failed to load library: ${e.message}</div>`;
+            console.error(e);
+            if (!append) els.viewContainer.innerHTML = `<div class="text-red-500">Failed to load library: ${e.message}</div>`;
+        } finally {
+            window.libraryState.isLoading = false;
+            safeCreateIcons();
         }
-        safeCreateIcons();
+    };
+
+    window.loadMoreLibrary = () => {
+        const trigger = document.getElementById('loadMoreTrigger');
+        if (trigger) trigger.innerHTML = '<div class="loader"></div>';
+        renderLibraryView(true);
     };
 
     window.openImageModal = (url, prompt) => {
-        // Simple modal implementation
         const modal = document.createElement('div');
-        modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-4'; // Removed animate-fade-in, increased opacity
-        modal.onclick = () => modal.remove();
+        modal.className = 'fixed inset-0 z-[100] flex items-center justify-center bg-black/95 p-4 opacity-0 transition-opacity duration-300';
+
+        // Use a wrapper to trigger animation after DOM insertion
+        setTimeout(() => modal.classList.remove('opacity-0'), 10);
+
+        modal.onclick = () => {
+            modal.classList.add('opacity-0');
+            setTimeout(() => modal.remove(), 300);
+        };
+
         modal.innerHTML = `
-            <div class="relative max-w-7xl max-h-screen w-full h-full flex flex-col items-center justify-center" onclick="event.stopPropagation()">
-                <img src="${url}" class="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl border border-zinc-800">
-                <div class="absolute top-4 right-4">
-                     <button onclick="this.closest('.fixed').remove()" class="p-2 bg-black/50 hover:bg-black text-white rounded-full">
-                        <i data-lucide="x" class="w-6 h-6"></i>
-                    </button>
+            <div class="relative w-full max-w-7xl h-full flex flex-col items-center justify-center p-4 md:p-8" onclick="event.stopPropagation()">
+                <!-- Image Container with Skeleton -->
+                <div class="relative w-full h-full flex items-center justify-center mb-4 min-h-[50vh]">
+                     <div id="modalSkeleton" class="absolute inset-0 flex items-center justify-center">
+                         <div class="w-12 h-12 rounded-full border-4 border-zinc-800 border-t-yellow-500 animate-spin"></div>
+                     </div>
+                     <img src="${url}" onload="document.getElementById('modalSkeleton').remove(); this.classList.remove('opacity-0')" class="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl border border-zinc-800 opacity-0 transition-opacity duration-500">
                 </div>
-                <div class="mt-4 bg-zinc-900/80 backdrop-blur px-6 py-3 rounded-xl border border-zinc-800 text-center max-w-2xl">
-                    <p class="text-sm text-zinc-300 max-h-32 overflow-y-auto custom-scrollbar">${prompt}</p>
+                
+                <!-- Close Button -->
+                <button onclick="this.closest('.fixed').onclick()" class="absolute top-4 right-4 md:top-8 md:right-8 p-3 bg-black/50 hover:bg-black/80 text-white rounded-full transition-colors z-10 backdrop-blur-sm border border-white/10">
+                    <i data-lucide="x" class="w-6 h-6"></i>
+                </button>
+                
+                <!-- Prompt Box -->
+                ${prompt ? `
+                <div class="absolute bottom-4 left-4 right-4 md:bottom-8 md:left-auto md:right-auto md:max-w-3xl w-full bg-zinc-900/90 backdrop-blur-md px-6 py-4 rounded-xl border border-zinc-700/50 shadow-2xl transform translate-y-4 opacity-0 animate-[slideUp_0.3s_ease-out_0.2s_forwards]">
+                    <div class="flex justify-between items-start gap-4">
+                        <p class="text-sm md:text-base text-zinc-300 max-h-32 overflow-y-auto custom-scrollbar font-medium leading-relaxed">${prompt}</p>
+                        <button onclick="window.downloadImage('${url}')" class="shrink-0 p-2.5 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-500 rounded-lg transition-colors" title="Download Image">
+                            <i data-lucide="download" class="w-5 h-5"></i>
+                        </button>
+                    </div>
                 </div>
+                ` : ''}
             </div>
         `;
+
+        // Add required keyframe for slideUp if not exists
+        if (!document.getElementById('modalKeyframes')) {
+            const style = document.createElement('style');
+            style.id = 'modalKeyframes';
+            style.innerHTML = `
+                @keyframes slideUp {
+                    from { opacity: 0; transform: translateY(20px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
         document.body.appendChild(modal);
         safeCreateIcons();
     };
@@ -941,15 +1009,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Source Library Logic ---
 
-    const renderSourceLibraryView = async () => {
-        els.viewContainer.innerHTML = '<div class="loader"></div>';
-        try {
-            const res = await fetch('/api/source');
-            const data = await res.json();
+    // Source Library Pagination State
+    window.sourceLibraryState = { page: 1, hasMore: true, isLoading: false };
 
-            let html = `
-            <div class="w-full h-full flex flex-col p-6 max-w-6xl">
-                     <div class="flex justify-between items-center mb-6">
+    const renderSourceLibraryView = async (append = false) => {
+        if (!append) {
+            window.sourceLibraryState = { page: 1, hasMore: true, isLoading: false };
+            els.viewContainer.innerHTML = `
+                <div class="w-full h-full flex flex-col p-6 max-w-6xl mx-auto">
+                     <div class="flex justify-between items-center mb-6 shrink-0">
                         <h2 class="text-xl font-bold text-white flex items-center gap-2">
                              <i data-lucide="folder-open" class="w-5 h-5 text-yellow-500"></i> Source Library
                         </h2>
@@ -958,40 +1026,70 @@ document.addEventListener('DOMContentLoaded', () => {
                         </button>
                         <input type="file" id="sourceUploadInput" class="hidden" accept="image/*">
                      </div>
-
-                     <div class="flex-1 overflow-y-auto custom-scrollbar">
+                     <div class="flex-1 overflow-y-auto custom-scrollbar min-h-0">
+                         <div id="sourceMasonryGrid" class="w-full columns-2 md:columns-4 lg:columns-5 gap-4 space-y-4"></div>
+                         <div id="sourceLoadMoreTrigger" class="py-8 flex justify-center"><div class="loader"></div></div>
+                     </div>
+                </div>
             `;
+        }
+
+        if (window.sourceLibraryState.isLoading || !window.sourceLibraryState.hasMore) return;
+        window.sourceLibraryState.isLoading = true;
+
+        try {
+            const res = await fetch(`/api/source?page=${window.sourceLibraryState.page}&limit=20`);
+            const data = await res.json();
+            const grid = document.getElementById('sourceMasonryGrid');
+            const trigger = document.getElementById('sourceLoadMoreTrigger');
 
             if (data.images && data.images.length > 0) {
-                html += `<div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                     ${data.images.map(img => `
-                         <div class="group relative rounded-lg overflow-hidden border border-zinc-800 bg-black aspect-square">
-                             <img src="${img.url}" class="w-full h-full object-contain">
-                             <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                                  <button onclick="window.deleteSourceImage(${img.id})" class="p-2 bg-red-900/80 hover:bg-red-900 rounded-full text-white">
-                                     <i data-lucide="trash-2" class="w-4 h-4"></i>
+                const html = data.images.map(img => `
+                         <div class="group relative rounded-lg overflow-hidden border border-zinc-800 bg-zinc-900 break-inside-avoid shadow-sm hover:shadow-yellow-500/10 transition-all duration-300 transform hover:-translate-y-1">
+                             <div class="absolute inset-0 flex items-center justify-center bg-zinc-900" id="src-skeleton-${img.id}">
+                                 <i data-lucide="image" class="w-6 h-6 text-zinc-700 animate-pulse"></i>
+                             </div>
+                             <img src="${img.url}" onload="document.getElementById('src-skeleton-${img.id}')?.remove(); this.classList.remove('opacity-0')" class="w-full h-auto object-cover opacity-0 transition-opacity duration-500">
+                             <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center gap-2">
+                                  <button onclick="window.deleteSourceImage(${img.id})" class="p-2.5 bg-red-900/80 hover:bg-red-800 rounded-full text-white backdrop-blur-sm transition-colors transform hover:scale-110">
+                                     <i data-lucide="trash-2" class="w-5 h-5"></i>
                                   </button>
                              </div>
                          </div>
-                     `).join('')}
-                 </div>`;
-            } else {
-                html += `
-                    <div class="h-64 flex flex-col items-center justify-center text-zinc-600 gap-4">
+                     `).join('');
+
+                if (grid) grid.insertAdjacentHTML('beforeend', html);
+
+                if (window.sourceLibraryState.page >= data.num_pages) {
+                    window.sourceLibraryState.hasMore = false;
+                    if (trigger) trigger.innerHTML = '<span class="text-zinc-600 text-xs">No more sources</span>';
+                } else {
+                    window.sourceLibraryState.page++;
+                    if (trigger) trigger.innerHTML = '<button onclick="window.loadMoreSource()" class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">Load More</button>';
+                }
+            } else if (!append) {
+                const scrollArea = els.viewContainer.querySelector('.overflow-y-auto');
+                if (scrollArea) scrollArea.innerHTML = `
+                    <div class="h-full flex flex-col items-center justify-center text-zinc-600 gap-4 mt-20">
                        <i data-lucide="hard-drive" class="w-12 h-12 opacity-50"></i>
                        <p>Library is empty.</p>
                     </div>
                  `;
             }
 
-            html += `</div></div>`;
-            els.viewContainer.innerHTML = html;
-            safeCreateIcons();
-
         } catch (e) {
             console.error(e);
-            els.viewContainer.innerHTML = `<p class="text-red-500">Error loading library</p>`;
+            if (!append) els.viewContainer.innerHTML = `<p class="text-red-500 p-6">Error loading library</p>`;
+        } finally {
+            window.sourceLibraryState.isLoading = false;
+            safeCreateIcons();
         }
+    };
+
+    window.loadMoreSource = () => {
+        const trigger = document.getElementById('sourceLoadMoreTrigger');
+        if (trigger) trigger.innerHTML = '<div class="loader"></div>';
+        renderSourceLibraryView(true);
     };
 
     window.triggerSourceUpload = () => {
