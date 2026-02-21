@@ -1,4 +1,4 @@
-{% load static %}
+﻿{% load static %}
 <!DOCTYPE html>
 <html lang="en">
 
@@ -55,16 +55,87 @@
             background: #27272a;
         }
 
+        .drawflow .drawflow-node.text_input,
+        .drawflow .drawflow-node.text_input.selected {
+            border: none;
+            background: transparent;
+            box-shadow: none;
+            overflow: visible !important;
+        }
+
+        .drawflow .drawflow-node.text_input .drawflow_content_node {
+            overflow: visible !important;
+        }
+
+        .drawflow .drawflow-node.text_input .box {
+            padding: 0 !important;
+        }
+
+        .drawflow .drawflow-node.generator,
+        .drawflow .drawflow-node.generator.selected {
+            border: none;
+            background: transparent;
+            box-shadow: none;
+            overflow: visible !important;
+        }
+
+        .drawflow .drawflow-node.generator .drawflow_content_node {
+            overflow: visible !important;
+        }
+
         .drawflow .drawflow-node .inputs .input {
-            background: #52525b;
-            border-color: #3f3f46;
-            left: -15px;
+            width: 24px;
+            height: 24px;
+            border-radius: 9999px;
+            background: rgba(24, 24, 27, 0.9);
+            border: 1px solid #3f3f46;
+            left: -6px;
+            box-shadow: 0 0 0 1px rgba(9, 9, 11, 0.85);
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #e5e7eb;
+            font-size: 10px;
+            font-weight: 700;
+            z-index: 12;
+            pointer-events: auto;
         }
 
         .drawflow .drawflow-node .outputs .output {
-            background: #eab308;
-            border-color: #ca8a04;
-            right: -15px;
+            width: 24px;
+            height: 24px;
+            border-radius: 9999px;
+            background: rgba(24, 24, 27, 0.9);
+            border: 1px solid #3f3f46;
+            right: -6px;
+            box-shadow: 0 0 0 1px rgba(9, 9, 11, 0.85);
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #e5e7eb;
+            font-size: 10px;
+            font-weight: 700;
+            z-index: 12;
+            pointer-events: auto;
+        }
+
+        .drawflow .drawflow-node .port-badge {
+            min-width: 14px;
+            height: 14px;
+            padding: 0 2px;
+            border-radius: 9999px;
+            border: 1px solid rgba(161, 161, 170, 0.5);
+            background: rgba(39, 39, 42, 0.95);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1;
+            color: #e4e4e7;
+            font-size: 9px;
+            font-weight: 700;
+            pointer-events: none;
         }
 
         .drawflow .connection .main-path {
@@ -90,6 +161,107 @@
 
         .drawflow .drawflow-node .box {
             padding: 16px;
+        }
+
+        .drawflow .drawflow-node .node-card {
+            border: 1px solid #3f3f46;
+            border-radius: 12px;
+            background: #18181b;
+            box-shadow: 0 10px 18px -10px rgba(0, 0, 0, 0.65);
+            overflow: hidden;
+        }
+
+        .drawflow .drawflow-node.selected .node-card {
+            border-color: rgba(59, 130, 246, 0.92);
+            box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.3), 0 12px 20px -10px rgba(0, 0, 0, 0.7);
+        }
+
+        .drawflow .drawflow-node .node-surface {
+            border-color: #3f3f46;
+            background: #18181b;
+            border-radius: 14px;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        .drawflow .drawflow-node.selected .node-surface {
+            border-color: rgba(59, 130, 246, 0.92);
+            box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.38);
+        }
+
+        .drawflow .drawflow-node .node-text-toolbar,
+        .drawflow .drawflow-node .node-text-color-palette {
+            display: none;
+        }
+
+        .drawflow .drawflow-node.selected .node-text-toolbar {
+            display: flex;
+        }
+
+        .drawflow .drawflow-node.selected .node-text-color-palette.open {
+            display: flex;
+        }
+
+        .drawflow .drawflow-node .node-input-text {
+            border-color: #3f3f46;
+        }
+
+        .drawflow .drawflow-node.selected .node-input-text {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.45);
+        }
+
+        .drawflow .drawflow-node.text_input .node-input-text {
+            border-color: transparent !important;
+            box-shadow: none !important;
+        }
+
+        .drawflow .drawflow-node.generator .node-generator-stage {
+            border-color: transparent !important;
+            box-shadow: none !important;
+        }
+
+        #drawflow-container.space-pan-active #drawflow,
+        #drawflow-container.space-pan-active .drawflow {
+            cursor: grab !important;
+        }
+
+        #drawflow-container.space-pan-active.space-pan-dragging #drawflow,
+        #drawflow-container.space-pan-active.space-pan-dragging .drawflow {
+            cursor: grabbing !important;
+        }
+
+        .drawflow .drawflow-node .node-resize-handle {
+            position: absolute;
+            right: -3px;
+            bottom: -3px;
+            width: 28px;
+            height: 28px;
+            border-radius: 9999px;
+            background: rgba(24, 24, 27, 0.85);
+            border: 1px solid rgba(161, 161, 170, 0.6);
+            cursor: nwse-resize;
+            z-index: 50;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .drawflow .drawflow-node .node-resize-handle::before {
+            content: '';
+            width: 16px;
+            height: 16px;
+            border-right: 4px solid #e5e7eb;
+            border-bottom: 4px solid #e5e7eb;
+            border-radius: 0 0 12px 0;
+            opacity: 0.95;
+        }
+
+        .drawflow .drawflow-node:hover .node-resize-handle,
+        .drawflow .drawflow-node.selected .node-resize-handle {
+            opacity: 0.95;
         }
     </style>
 </head>
@@ -125,6 +297,37 @@
                         <textarea id="pgSourceInput" placeholder="Enter your prompt here..."
                             class="w-full h-40 bg-zinc-900/50 border border-zinc-800 rounded-lg p-3 text-xs text-zinc-300 resize-none outline-none focus:border-yellow-500/50 focus:ring-1 focus:ring-yellow-500/50 custom-scrollbar transition-all"></textarea>
                     </div>
+                </div>
+            </div>
+
+            <!-- Workflow Settings (Hidden by default) -->
+            <div id="workflowSettings" class="hidden space-y-3 pb-6 border-b border-zinc-800">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2 text-zinc-400 text-xs font-semibold uppercase tracking-wider">
+                        <span>WORKFLOW</span>
+                    </div>
+                    <i data-lucide="git-merge" class="w-4 h-4 text-zinc-500"></i>
+                </div>
+                <select id="workflowSelect"
+                    class="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2.5 text-xs text-zinc-200 outline-none focus:border-yellow-500/50 focus:ring-1 focus:ring-yellow-500/50">
+                </select>
+                <div class="grid grid-cols-2 gap-2">
+                    <button id="newWorkflowBtn"
+                        class="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs text-zinc-200 flex items-center justify-center gap-1.5">
+                        <i data-lucide="plus" class="w-3 h-3"></i> New
+                    </button>
+                    <button id="saveWorkflowBtn"
+                        class="px-3 py-2 rounded-lg bg-emerald-700/70 hover:bg-emerald-600 border border-emerald-500/40 text-xs text-emerald-100 flex items-center justify-center gap-1.5">
+                        <i data-lucide="save" class="w-3 h-3"></i> Save
+                    </button>
+                    <button id="saveAsWorkflowBtn"
+                        class="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs text-zinc-200 flex items-center justify-center gap-1.5">
+                        <i data-lucide="copy-plus" class="w-3 h-3"></i> Save As
+                    </button>
+                    <button id="deleteWorkflowBtn"
+                        class="px-3 py-2 rounded-lg bg-red-900/50 hover:bg-red-800/60 border border-red-500/40 text-xs text-red-200 flex items-center justify-center gap-1.5">
+                        <i data-lucide="trash-2" class="w-3 h-3"></i> Delete
+                    </button>
                 </div>
             </div>
 
@@ -531,3 +734,10 @@
 </body>
 
 </html>
+
+
+
+
+
+
+

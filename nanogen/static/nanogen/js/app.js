@@ -1,8 +1,13 @@
-window.onerror = function (msg, url, line, col, error) {
+﻿window.onerror = function (msg, url, line, col, error) {
     // Ignore ResizeObserver errors which are common and harmless
-    if (msg.includes('ResizeObserver')) return;
+    if (typeof msg === 'string' && msg.includes('ResizeObserver')) return true;
+    if (msg === 'Script error.' && Number(line) === 0) {
+        console.warn('Ignored opaque script error:', { msg, url, line, col, error });
+        return true;
+    }
     alert("Runtime Error:\n" + msg + "\nLine: " + line);
     console.error("Global Error:", error);
+    return false;
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -11,25 +16,25 @@ document.addEventListener('DOMContentLoaded', () => {
     const DEFAULT_PRESETS = [
         {
             id: 'default-comp-1',
-            name: '의상교체',
+            name: '?섏긽援먯껜',
             text: "Change only the main clothing garments to strictly match the design, texture, and details of the provided clothing reference image. Replicate the attached outfit exactly. Crucially, preserve all original accessories intact (including bags, earrings, rings, jewelry, eyewear, etc.). Keep the original model's face, pose, hair, background, and lighting exactly the same. Seamless integration, photorealistic, 8k resolution.",
             mode: 'composition'
         },
         {
             id: 'default-gen-1',
-            name: '9분할',
-            text: "Acting as an award-winning cinematographer and storyboard artist, analyze the provided reference image to output a detailed textual plan for a 10-20 second cinematic sequence with a 4-beat arc—including scene analysis, story theme, cinematic approach, and precise definitions for 9-12 keyframes—and then finally generate a single high-resolution 3x3 master contact sheet grid image visualizing these keyframes while maintaining strict visual continuity of the original subject and environment with clear labels for each shot.",
+            name: '9遺꾪븷',
+            text: "Acting as an award-winning cinematographer and storyboard artist, analyze the provided reference image to output a detailed textual plan for a 10-20 second cinematic sequence with a 4-beat arc?봧ncluding scene analysis, story theme, cinematic approach, and precise definitions for 9-12 keyframes?봞nd then finally generate a single high-resolution 3x3 master contact sheet grid image visualizing these keyframes while maintaining strict visual continuity of the original subject and environment with clear labels for each shot.",
             mode: 'generation'
         },
         {
             id: 'default-gen-2',
-            name: '도심 쇼윈도',
+            name: 'Default Gen 2',
             text: "A photorealistic medium shot of a woman with [INSERT FACE FEATURES HERE] wearing [INSERT NEW CLOTHING IMAGE DESCRIPTION HERE]. She is standing outside a luxury toy store window, lightly touching the glass. Her pose and facial expression remain unchanged. Inside the window, a stylized cartoon character doll with large round eyes mimics her exact pose. The background, lighting, and reflections remain exactly the same as the previous image: bright clear lighting, luxury street fashion atmosphere, realistic glass reflections. 8k resolution, cinematic.",
             mode: 'generation'
         },
         {
             id: 'default-swap-1',
-            name: '모델변경',
+            name: 'Default Swap 1',
             text: "Perform a seamless identity swap, replacing the original person with the identity and likeness of the provided attached model. Crucially, the new model must adopt the exact same pose, body proportions, composition, and placement within the frame as the original person. The entire background, lighting, shadows, and atmosphere must remain 100% identical to the original image. Photorealistic, high fidelity result.",
             mode: 'identity_swap'
         }
@@ -82,6 +87,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     let activeMaskTarget = null; // Temp storage for currently editing mask source
+    const WORKFLOW_STORAGE_KEY = 'nanoGenWorkflowStudioStoreV1';
 
     // Elements
     const els = {
@@ -394,12 +400,95 @@ document.addEventListener('DOMContentLoaded', () => {
         els.viewContainer.innerHTML = `
             <div class="w-full h-full relative" id="drawflow-container">
                 <div id="drawflow" class="w-full h-full bg-[#09090b]"></div>
-                
+
+                <div id="workflowTextPreviewModal" class="hidden absolute inset-0 z-40 bg-black/70 p-4 md:p-8">
+                    <div class="h-full w-full max-w-4xl mx-auto bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl flex flex-col">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+                            <h3 class="text-sm font-semibold text-zinc-100">Text Node Preview</h3>
+                            <button id="closeWorkflowTextPreviewBtn" class="px-2 py-1 text-xs text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded">Close</button>
+                        </div>
+                        <div class="flex-1 p-4">
+                            <textarea id="workflowTextPreviewInput" class="w-full h-full bg-zinc-950 border border-zinc-700 rounded-xl p-4 text-sm text-zinc-100 outline-none resize-none custom-scrollbar"></textarea>
+                        </div>
+                        <div class="px-4 py-3 border-t border-zinc-800 flex justify-end">
+                            <button id="applyWorkflowTextPreviewBtn" class="px-3 py-1.5 text-xs font-semibold text-black bg-yellow-500 hover:bg-yellow-400 rounded">Apply</button>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Run Pipeline Button -->
                 <div class="absolute top-4 right-4 z-10">
                     <button id="runWorkflowBtn" class="px-4 py-2 bg-gradient-to-r from-yellow-500 to-amber-600 border border-yellow-500/50 rounded-xl text-sm font-bold text-black hover:shadow-yellow-500/20 shadow-2xl flex items-center gap-2 transform hover:scale-105 transition-all">
                         <i data-lucide="play" class="w-5 h-5"></i> Run Pipeline
                     </button>
+                </div>
+                <!-- Right Click Context Menu -->
+                <div id="workflowContextMenu" class="hidden absolute z-30 w-[282px] bg-zinc-900/97 backdrop-blur-xl border border-zinc-800 rounded-2xl shadow-[0_20px_70px_rgba(0,0,0,0.62)] overflow-hidden">
+                    <div class="p-2.5 border-b border-zinc-800/90">
+                        <div class="relative">
+                            <i data-lucide="search" class="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2"></i>
+                            <input id="workflowContextSearch" type="text" placeholder="Search"
+                                class="w-full bg-zinc-950/85 border border-zinc-800 rounded-lg pl-9 pr-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-500 outline-none focus:border-zinc-600">
+                        </div>
+                    </div>
+                    <div class="px-3 pt-1.5 pb-1.5 border-b border-zinc-800/90 flex items-center gap-1.5 text-zinc-400">
+                        <button class="w-7 h-7 rounded-full bg-zinc-800 text-zinc-200 flex items-center justify-center border border-zinc-700 shadow-inner shadow-black/40">
+                            <i data-lucide="layout-grid" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <button class="w-7 h-7 rounded-full hover:bg-zinc-800 flex items-center justify-center border border-transparent hover:border-zinc-700"><i data-lucide="clock-3" class="w-3.5 h-3.5"></i></button>
+                        <button class="w-7 h-7 rounded-full hover:bg-zinc-800 flex items-center justify-center border border-transparent hover:border-zinc-700"><i data-lucide="messages-square" class="w-3.5 h-3.5"></i></button>
+                        <button class="w-7 h-7 rounded-full hover:bg-zinc-800 flex items-center justify-center border border-transparent hover:border-zinc-700"><i data-lucide="image" class="w-3.5 h-3.5"></i></button>
+                        <button class="w-7 h-7 rounded-full hover:bg-zinc-800 flex items-center justify-center border border-transparent hover:border-zinc-700"><i data-lucide="square-plus" class="w-3.5 h-3.5"></i></button>
+                        <button class="w-7 h-7 rounded-full hover:bg-zinc-800 flex items-center justify-center border border-transparent hover:border-zinc-700"><i data-lucide="type" class="w-3.5 h-3.5"></i></button>
+                        <button class="w-7 h-7 rounded-full hover:bg-zinc-800 flex items-center justify-center border border-transparent hover:border-zinc-700"><i data-lucide="sparkles" class="w-3.5 h-3.5"></i></button>
+                    </div>
+                    <div class="max-h-[472px] overflow-y-auto p-2.5 custom-scrollbar">
+                        <div class="px-1 pb-1.5 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Basics</div>
+                        <button class="workflow-menu-item w-full flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-zinc-800/90 text-left transition-colors" data-action="text_input" data-label="Text">
+                            <span class="w-7 h-7 rounded-lg bg-emerald-500/12 border border-emerald-500/30 flex items-center justify-center text-emerald-300"><i data-lucide="type" class="w-4 h-4"></i></span>
+                            <span class="text-sm font-medium leading-none text-zinc-100">Text</span>
+                        </button>
+                        <button class="workflow-menu-item w-full flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-zinc-800/90 text-left transition-colors" data-action="generator_image" data-label="Image Generator">
+                            <span class="w-7 h-7 rounded-lg bg-indigo-500/12 border border-indigo-500/30 flex items-center justify-center text-indigo-300"><i data-lucide="image-plus" class="w-4 h-4"></i></span>
+                            <span class="text-sm font-medium leading-none text-zinc-100">Image Generator</span>
+                        </button>
+                        <button class="workflow-menu-item w-full flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-zinc-800/90 text-left transition-colors" data-action="generator_video" data-label="Video Generator">
+                            <span class="w-7 h-7 rounded-lg bg-violet-500/12 border border-violet-500/30 flex items-center justify-center text-violet-300"><i data-lucide="clapperboard" class="w-4 h-4"></i></span>
+                            <span class="text-sm font-medium leading-none text-zinc-100">Video Generator</span>
+                        </button>
+                        <button class="workflow-menu-item w-full flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-zinc-800/90 text-left transition-colors" data-action="assistant" data-label="Assistant">
+                            <span class="w-7 h-7 rounded-lg bg-emerald-500/12 border border-emerald-500/30 flex items-center justify-center text-emerald-300"><i data-lucide="sparkles" class="w-4 h-4"></i></span>
+                            <span class="text-sm font-medium leading-none text-zinc-100">Assistant</span>
+                        </button>
+                        <button class="workflow-menu-item w-full flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-zinc-800/90 text-left transition-colors" data-action="generator_upscaler" data-label="Image Upscaler">
+                            <span class="w-7 h-7 rounded-lg bg-indigo-500/12 border border-indigo-500/30 flex items-center justify-center text-indigo-300"><i data-lucide="scan-search" class="w-4 h-4"></i></span>
+                            <span class="text-sm font-medium leading-none text-zinc-100">Image Upscaler</span>
+                        </button>
+                        <button class="workflow-menu-item w-full flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-zinc-800/90 text-left transition-colors" data-action="output_result" data-label="List Output Result">
+                            <span class="w-7 h-7 rounded-lg bg-amber-500/12 border border-amber-500/30 flex items-center justify-center text-amber-300"><i data-lucide="list" class="w-4 h-4"></i></span>
+                            <span class="text-sm font-medium leading-none text-zinc-100">List</span>
+                            <span class="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">New</span>
+                        </button>
+
+                        <div class="mt-3 px-1 pb-1.5 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Media</div>
+                        <button class="workflow-menu-item w-full flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-zinc-800/90 text-left transition-colors" data-action="image_input" data-label="Upload">
+                            <span class="w-7 h-7 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center text-zinc-300"><i data-lucide="upload" class="w-4 h-4"></i></span>
+                            <span class="text-sm font-medium leading-none text-zinc-100">Upload</span>
+                        </button>
+                        <button class="workflow-menu-item w-full flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-zinc-800/90 text-left transition-colors" data-action="video_input" data-label="Assets">
+                            <span class="w-7 h-7 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center text-zinc-300"><i data-lucide="folder-open" class="w-4 h-4"></i></span>
+                            <span class="text-sm font-medium leading-none text-zinc-100">Assets</span>
+                        </button>
+                        <button class="workflow-menu-item w-full flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-zinc-800/90 text-left transition-colors" data-action="generator_image" data-label="Find Inspiration">
+                            <span class="w-7 h-7 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center text-zinc-300"><i data-lucide="search" class="w-4 h-4"></i></span>
+                            <span class="text-sm font-medium leading-none text-zinc-100">Find Inspiration</span>
+                            <span class="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">New</span>
+                        </button>
+                    </div>
+                    <div class="border-t border-zinc-800/90 px-3 py-2 text-[11px] text-zinc-500 flex items-center justify-between bg-zinc-950/30">
+                        <div class="flex items-center gap-1.5"><span class="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Up/Down</span> Navigate</div>
+                        <div class="flex items-center gap-1.5"><span class="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Enter</span> Insert</div>
+                    </div>
                 </div>
 
                 <!-- Floating Canvas Controls -->
@@ -457,7 +546,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
 
         // Ensure Drawflow is initialized
-        requestAnimationFrame(() => {
+        requestAnimationFrame(async () => {
             const container = document.getElementById('drawflow');
             if (!container) return;
 
@@ -469,10 +558,653 @@ document.addEventListener('DOMContentLoaded', () => {
             window.editor = new Drawflow(container);
             window.editor.start();
 
+            const workflowSelect = document.getElementById('workflowSelect');
+            const newWorkflowBtn = document.getElementById('newWorkflowBtn');
+            const saveWorkflowBtn = document.getElementById('saveWorkflowBtn');
+            const saveAsWorkflowBtn = document.getElementById('saveAsWorkflowBtn');
+            const deleteWorkflowBtn = document.getElementById('deleteWorkflowBtn');
+
+            const getEmptyWorkflowGraph = () => ({ drawflow: { Home: { data: {} } } });
+
+            const createWorkflowEntry = (name, graph) => ({
+                id: `wf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                name: name || 'Untitled Workflow',
+                updatedAt: new Date().toISOString(),
+                graph: graph || getEmptyWorkflowGraph()
+            });
+
+            const WORKFLOW_IDB_NAME = 'nanoGenWorkflowDB';
+            const WORKFLOW_IDB_STORE = 'workflow_store';
+            const WORKFLOW_IDB_KEY = 'main';
+            const WORKFLOW_STORAGE_FULL_BACKUP_KEY = `${WORKFLOW_STORAGE_KEY}FullBackup`;
+            let lastWorkflowPersistError = '';
+            let serverSaveWarningShown = false;
+
+            const openWorkflowDb = () => new Promise((resolve, reject) => {
+                if (!window.indexedDB) {
+                    reject(new Error('IndexedDB is not supported in this browser.'));
+                    return;
+                }
+                const req = indexedDB.open(WORKFLOW_IDB_NAME, 1);
+                req.onupgradeneeded = () => {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains(WORKFLOW_IDB_STORE)) {
+                        db.createObjectStore(WORKFLOW_IDB_STORE);
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error || new Error('Failed to open workflow IndexedDB'));
+            });
+
+            const readWorkflowStoreFromIdb = async () => {
+                try {
+                    const db = await openWorkflowDb();
+                    return await new Promise((resolve, reject) => {
+                        const tx = db.transaction(WORKFLOW_IDB_STORE, 'readonly');
+                        const store = tx.objectStore(WORKFLOW_IDB_STORE);
+                        const req = store.get(WORKFLOW_IDB_KEY);
+                        req.onsuccess = () => resolve(req.result || null);
+                        req.onerror = () => reject(req.error || new Error('Failed to read workflow store from IndexedDB'));
+                        tx.oncomplete = () => db.close();
+                    });
+                } catch (err) {
+                    console.warn('IndexedDB read failed. Falling back to localStorage.', err);
+                    return null;
+                }
+            };
+
+            const persistWorkflowStoreToIdb = async (store) => {
+                const db = await openWorkflowDb();
+                return await new Promise((resolve, reject) => {
+                    const tx = db.transaction(WORKFLOW_IDB_STORE, 'readwrite');
+                    const os = tx.objectStore(WORKFLOW_IDB_STORE);
+                    const req = os.put(store, WORKFLOW_IDB_KEY);
+                    req.onerror = () => reject(req.error || new Error('Failed to write workflow store to IndexedDB'));
+                    tx.oncomplete = () => {
+                        db.close();
+                        resolve(true);
+                    };
+                    tx.onerror = () => reject(tx.error || new Error('IndexedDB write transaction failed'));
+                });
+            };
+
+            const parseLocalWorkflowStore = () => {
+                try {
+                    const raw = localStorage.getItem(WORKFLOW_STORAGE_FULL_BACKUP_KEY) || localStorage.getItem(WORKFLOW_STORAGE_KEY);
+                    return raw ? JSON.parse(raw) : null;
+                } catch (err) {
+                    console.warn('Failed to parse workflow store from localStorage.', err);
+                    return null;
+                }
+            };
+
+            const normalizeWorkflowStore = (parsed) => {
+                const base = {
+                    workflows: Array.isArray(parsed?.workflows) ? parsed.workflows : [],
+                    activeId: parsed?.activeId || null
+                };
+                if (base.workflows.length === 0) {
+                    const first = createWorkflowEntry('Workflow 1', getEmptyWorkflowGraph());
+                    base.workflows.push(first);
+                    base.activeId = first.id;
+                }
+                if (!base.activeId || !base.workflows.find((w) => w.id === base.activeId)) {
+                    base.activeId = base.workflows[0].id;
+                }
+                return base;
+            };
+
+            const readWorkflowStore = async () => {
+                let serverNormalized = null;
+                try {
+                    const res = await fetch('/api/workflow/store');
+                    if (res.ok) {
+                        const payload = await res.json();
+                        const serverStore = payload && payload.store;
+                        if (serverStore && Array.isArray(serverStore.workflows)) {
+                            const normalizedServer = normalizeWorkflowStore(serverStore);
+                            serverNormalized = normalizedServer;
+                            try {
+                                await persistWorkflowStoreToIdb(normalizedServer);
+                            } catch (err) {
+                                console.warn('Server->IndexedDB sync failed.', err);
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.warn('Server workflow read failed. Falling back to local stores.', err);
+                }
+
+                const idbStore = await readWorkflowStoreFromIdb();
+                const normalizedIdb = (idbStore && Array.isArray(idbStore.workflows) && idbStore.workflows.length > 0) ? normalizeWorkflowStore(idbStore) : null;
+                if (serverNormalized && serverNormalized.workflows && serverNormalized.workflows.length > 0) {
+                    return serverNormalized;
+                }
+                if (normalizedIdb) {
+                    return normalizedIdb;
+                }
+
+                const localStore = parseLocalWorkflowStore();
+                const normalized = normalizeWorkflowStore(localStore);
+                try {
+                    await persistWorkflowStoreToIdb(normalized);
+                } catch (err) {
+                    console.warn('Initial workflow sync to IndexedDB failed.', err);
+                }
+                return normalized;
+            };
+
+            const persistWorkflowStore = async (store) => {
+                try {
+                    lastWorkflowPersistError = '';
+                    let serverSaved = false;
+                    try {
+                        const res = await fetch('/api/workflow/store', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ store })
+                        });
+                        if (!res.ok) {
+                            const errBody = await res.json().catch(() => ({}));
+                            lastWorkflowPersistError = errBody?.error || `HTTP ${res.status}`;
+                            console.warn('Server workflow save failed:', lastWorkflowPersistError);
+                        } else {
+                            serverSaved = true;
+                        }
+                    } catch (serverErr) {
+                        lastWorkflowPersistError = serverErr?.message || 'Network error';
+                        console.warn('Server workflow save error:', serverErr);
+                    }
+
+                    await persistWorkflowStoreToIdb(store);
+                    try {
+                        localStorage.setItem(WORKFLOW_STORAGE_FULL_BACKUP_KEY, JSON.stringify(store));
+                    } catch (fullErr) {
+                        console.warn('Workflow full backup sync to localStorage failed.', fullErr);
+                    }
+                    const lite = {
+                        activeId: store.activeId,
+                        workflows: (store.workflows || []).map((w) => ({
+                            id: w.id,
+                            name: w.name,
+                            updatedAt: w.updatedAt
+                        })),
+                        storage: 'indexeddb'
+                    };
+                    try {
+                        localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(lite));
+                    } catch (metaErr) {
+                        console.warn('Workflow metadata sync to localStorage failed, but IndexedDB save succeeded.', metaErr);
+                    }
+                    if (!serverSaved) {
+                        if (!serverSaveWarningShown) {
+                            serverSaveWarningShown = true;
+                            console.warn('Workflow server save unavailable. Using local backup storage.', lastWorkflowPersistError);
+                        }
+                        return true;
+                    }
+                    return true;
+                } catch (err) {
+                    lastWorkflowPersistError = err?.message || 'IndexedDB write failed';
+                    console.error('Workflow store save failed (IndexedDB).', err);
+                    return false;
+                }
+            };
+
+            const renderWorkflowOptions = (store) => {
+                workflowSelect.innerHTML = '';
+                store.workflows.forEach((workflow) => {
+                    const option = document.createElement('option');
+                    option.value = workflow.id;
+                    option.textContent = workflow.name || 'Untitled Workflow';
+                    workflowSelect.appendChild(option);
+                });
+                workflowSelect.value = store.activeId;
+            };
+
+            const hydrateNodeUIFromData = () => {
+                const exportData = window.editor.export();
+                const nodes = exportData?.drawflow?.Home?.data || {};
+
+                Object.entries(nodes).forEach(([id, node]) => {
+                    const dom = document.getElementById('node-' + id);
+                    if (!dom) return;
+                    const data = node.data || {};
+
+                    if (node.name === 'text_input') {
+                        const textEl = dom.querySelector('.node-input-text');
+                        if (textEl) {
+                            textEl.value = data.text || '';
+                            textEl.style.background = data.textBg || '#18181b';
+                            applyTextVisualStyle(textEl, {
+                                heading: data.textHeading || 'h3',
+                                bold: !!data.textBold,
+                                italic: !!data.textItalic,
+                                underline: !!data.textUnderline,
+                                listType: data.textListType || ''
+                            });
+                            const headingSelect = dom.querySelector('.node-heading-select');
+                            if (headingSelect) headingSelect.value = data.textHeading || 'h3';
+                        }
+                        if (data.nodeWidth || data.nodeHeight) applyNodeSize(dom, data.nodeWidth, data.nodeHeight);
+                    } else if (node.name === 'image_input') {
+                        const imgEl = dom.querySelector('.node-image-preview');
+                        const removeBtn = dom.querySelector('.node-image-remove');
+                        const imageData = data.imageBase64 || '';
+                        if (imgEl && imageData) {
+                            imgEl.src = imageData;
+                            imgEl.classList.remove('hidden');
+                            if (removeBtn) removeBtn.classList.remove('hidden');
+                        }
+                        if (data.nodeWidth || data.nodeHeight) applyNodeSize(dom, data.nodeWidth, data.nodeHeight);
+                    } else if (node.name === 'video_input') {
+                        const videoEl = dom.querySelector('.node-video-preview');
+                        const removeBtn = dom.querySelector('.node-video-remove');
+                        const videoData = data.videoUrl || '';
+                        if (videoEl && videoData) {
+                            videoEl.src = videoData;
+                            videoEl.classList.remove('hidden');
+                            if (removeBtn) removeBtn.classList.remove('hidden');
+                        }
+                        if (data.nodeWidth || data.nodeHeight) applyNodeSize(dom, data.nodeWidth, data.nodeHeight);
+                    } else if (node.name === 'generator' || node.name === 'prompt_gen' || node.name === 'image_gen' || node.name === 'video_gen' || node.name === 'base_gen' || node.name === 'modifier') {
+                        const outputTypeEl = dom.querySelector('.node-output-type');
+                        const modelEl = dom.querySelector('.node-input-model');
+                        const agentPromptEl = dom.querySelector('.node-agent-prompt');
+                        const textPromptEl = dom.querySelector('.node-input-prompt') || dom.querySelector('.node-gen-prompt');
+                        const qtyEl = dom.querySelector('.node-gen-count');
+                        const styleEl = dom.querySelector('.node-gen-style');
+                        const ratioEl = dom.querySelector('.node-gen-ratio');
+                        const resolutionEl = dom.querySelector('.node-gen-resolution');
+                        const refPreviewEl = dom.querySelector('.node-generator-reference-preview');
+                        const refRemoveEl = dom.querySelector('.node-generator-reference-remove');
+                        const resultContainer = dom.querySelector('.node-result-container');
+                        const statusEl = dom.querySelector('.NodeStatusStatus');
+                        if (outputTypeEl && data.outputType) outputTypeEl.value = data.outputType;
+                        syncGeneratorModelOptions(dom);
+                        if (modelEl && data.modelId) modelEl.value = data.modelId;
+                        if (modelEl && !modelEl.value) {
+                            modelEl.value = getModelOptionsForOutputType(outputTypeEl ? outputTypeEl.value : 'image')[0]?.value || '';
+                        }
+                        if (agentPromptEl) agentPromptEl.value = data.agentPrompt || '';
+                        if (textPromptEl) textPromptEl.value = data.textPrompt || '';
+                        if (qtyEl) qtyEl.value = String(data.count || 1);
+                        if (styleEl && data.style) styleEl.value = data.style;
+                        if (ratioEl && data.aspectRatio) ratioEl.value = data.aspectRatio;
+                        if (resolutionEl && data.resolution) resolutionEl.value = data.resolution;
+                        if (refPreviewEl && data.localReferenceImage) {
+                            refPreviewEl.src = data.localReferenceImage;
+                            refPreviewEl.classList.remove('hidden');
+                            if (refRemoveEl) refRemoveEl.classList.remove('hidden');
+                        }
+                        if (resultContainer) {
+                            const resultType = data.resultType || '';
+                            const resultImages = Array.isArray(data.generatedImageUrls) ? data.generatedImageUrls.filter(Boolean) : [];
+                            const resultText = data.generatedTextResult || '';
+                            if (resultType === 'image' && resultImages.length > 0) {
+                                if (resultImages.length === 1) {
+                                    resultContainer.innerHTML = `<img src="${resultImages[0]}" class="w-full h-auto object-cover border border-zinc-700/50 rounded cursor-pointer hover:opacity-90 transition-opacity" onclick="window.openImageModal(this.src, '')">`;
+                                } else {
+                                    const items = resultImages.map((url) => `<img src="${url}" class="w-full h-24 object-cover border border-zinc-700/40 rounded cursor-pointer" onclick="window.openImageModal(this.src, '')">`).join('');
+                                    resultContainer.innerHTML = `<div class="grid grid-cols-2 gap-2 p-2 bg-black/30 rounded">${items}</div>`;
+                                }
+                                resultContainer.classList.remove('hidden');
+                            } else if (resultType === 'text' && resultText) {
+                                resultContainer.innerHTML = `<div class="p-2 bg-black/50 text-[10px] text-zinc-300 break-all leading-tight">${String(resultText)}</div>`;
+                                resultContainer.classList.remove('hidden');
+                            } else {
+                                resultContainer.innerHTML = '';
+                                resultContainer.classList.add('hidden');
+                            }
+                        }
+                        if (statusEl) statusEl.textContent = data.statusText || 'Waiting...';
+                        setGeneratorView(dom, data.generatorView || 'prompt');
+                        if (data.nodeWidth || data.nodeHeight) applyNodeSize(dom, data.nodeWidth, data.nodeHeight);
+                    } else if (node.name === 'output_result') {
+                        const outDisplay = dom.querySelector('.node-output-display');
+                        if (outDisplay) {
+                            if ((data.outputDisplayType || '') === 'image' && data.outputDisplayImage) {
+                                outDisplay.innerHTML = `<img src="${data.outputDisplayImage}" class="w-full h-auto object-contain rounded">`;
+                            } else if ((data.outputDisplayType || '') === 'text' && typeof data.outputDisplayText === 'string') {
+                                outDisplay.textContent = data.outputDisplayText;
+                            } else {
+                                outDisplay.textContent = 'No Data';
+                            }
+                        }
+                        if (data.nodeWidth || data.nodeHeight) applyNodeSize(dom, data.nodeWidth, data.nodeHeight);
+                    }
+                });
+            };
+
+            const captureNodeUIIntoGraph = (graph) => {
+                const nodes = graph?.drawflow?.Home?.data || {};
+
+                Object.entries(nodes).forEach(([id, node]) => {
+                    const dom = document.getElementById('node-' + id);
+                    if (!dom) return;
+                    const data = (node.data && typeof node.data === 'object') ? node.data : {};
+                    data.nodeWidth = dom.offsetWidth || data.nodeWidth || null;
+                    data.nodeHeight = dom.offsetHeight || data.nodeHeight || null;
+
+                    if (node.name === 'text_input') {
+                        const textEl = dom.querySelector('.node-input-text');
+                        data.text = textEl ? textEl.value : '';
+                        data.textBg = textEl ? (textEl.style.background || '#18181b') : '#18181b';
+                        data.textHeading = textEl ? (textEl.dataset.heading || 'h3') : 'h3';
+                        data.textBold = textEl ? (textEl.dataset.bold === 'true') : false;
+                        data.textItalic = textEl ? (textEl.dataset.italic === 'true') : false;
+                        data.textUnderline = textEl ? (textEl.dataset.underline === 'true') : false;
+                        data.textListType = textEl ? (textEl.dataset.listType || '') : '';
+                    } else if (node.name === 'image_input') {
+                        const imgEl = dom.querySelector('.node-image-preview');
+                        data.imageBase64 = (imgEl && imgEl.src && imgEl.src !== window.location.href) ? imgEl.src : '';
+                    } else if (node.name === 'video_input') {
+                        const videoEl = dom.querySelector('.node-video-preview');
+                        data.videoUrl = (videoEl && videoEl.src && videoEl.src !== window.location.href) ? videoEl.src : '';
+                    } else if (node.name === 'generator' || node.name === 'prompt_gen' || node.name === 'image_gen' || node.name === 'video_gen' || node.name === 'base_gen' || node.name === 'modifier') {
+                        const outputTypeEl = dom.querySelector('.node-output-type');
+                        const modelEl = dom.querySelector('.node-input-model');
+                        const agentPromptEl = dom.querySelector('.node-agent-prompt');
+                        const textPromptEl = dom.querySelector('.node-input-prompt') || dom.querySelector('.node-gen-prompt');
+                        const qtyEl = dom.querySelector('.node-gen-count');
+                        const styleEl = dom.querySelector('.node-gen-style');
+                        const ratioEl = dom.querySelector('.node-gen-ratio');
+                        const resolutionEl = dom.querySelector('.node-gen-resolution');
+                        const refPreviewEl = dom.querySelector('.node-generator-reference-preview');
+                        const resultContainer = dom.querySelector('.node-result-container');
+                        const statusEl = dom.querySelector('.NodeStatusStatus');
+                        data.outputType = outputTypeEl ? outputTypeEl.value : data.outputType;
+                        data.modelId = modelEl ? modelEl.value : data.modelId;
+                        data.agentPrompt = agentPromptEl ? agentPromptEl.value : '';
+                        data.textPrompt = textPromptEl ? textPromptEl.value : '';
+                        data.count = qtyEl ? Number(qtyEl.value || 1) : 1;
+                        data.style = styleEl ? styleEl.value : 'auto';
+                        data.aspectRatio = ratioEl ? ratioEl.value : '16:9';
+                        data.resolution = resolutionEl ? resolutionEl.value : '1K';
+                        data.localReferenceImage = (refPreviewEl && refPreviewEl.src && refPreviewEl.src !== window.location.href) ? refPreviewEl.src : '';
+                        data.statusText = statusEl ? statusEl.textContent : 'Waiting...';
+                        data.generatorView = dom.dataset.generatorView || 'prompt';
+                        data.generatedImageUrls = [];
+                        data.generatedTextResult = '';
+                        data.resultType = '';
+                        if (resultContainer && !resultContainer.classList.contains('hidden')) {
+                            const imageEls = Array.from(resultContainer.querySelectorAll('img'));
+                            const urls = imageEls
+                                .map((img) => img.getAttribute('src') || '')
+                                .filter((src) => src && src !== window.location.href);
+                            if (urls.length > 0) {
+                                data.generatedImageUrls = urls;
+                                data.resultType = 'image';
+                            } else {
+                                const text = (resultContainer.textContent || '').trim();
+                                if (text) {
+                                    data.generatedTextResult = text;
+                                    data.resultType = 'text';
+                                }
+                            }
+                        }
+                    } else if (node.name === 'output_result') {
+                        const outDisplay = dom.querySelector('.node-output-display');
+                        data.outputDisplayType = '';
+                        data.outputDisplayImage = '';
+                        data.outputDisplayText = '';
+                        if (outDisplay) {
+                            const outImg = outDisplay.querySelector('img');
+                            const outSrc = outImg ? (outImg.getAttribute('src') || '') : '';
+                            if (outSrc && outSrc !== window.location.href) {
+                                data.outputDisplayType = 'image';
+                                data.outputDisplayImage = outSrc;
+                            } else {
+                                data.outputDisplayType = 'text';
+                                data.outputDisplayText = outDisplay.textContent || '';
+                            }
+                        }
+                    }
+
+                    node.data = data;
+                });
+
+                return graph;
+            };
+
+            const loadWorkflowToEditor = async (store, workflowId) => {
+                const workflow = store.workflows.find(w => w.id === workflowId);
+                if (!workflow) return;
+
+                const normalizeGraph = (graph) => {
+                    if (!graph || typeof graph !== 'object') return getEmptyWorkflowGraph();
+                    if (!graph.drawflow || typeof graph.drawflow !== 'object') return getEmptyWorkflowGraph();
+                    if (!graph.drawflow.Home || typeof graph.drawflow.Home !== 'object') {
+                        graph.drawflow.Home = { data: {} };
+                    }
+                    if (!graph.drawflow.Home.data || typeof graph.drawflow.Home.data !== 'object') {
+                        graph.drawflow.Home.data = {};
+                    }
+                    return graph;
+                };
+
+                const importGraphSafely = (graph) => {
+                    const normalized = normalizeGraph(graph);
+                    window.editor.import(normalized);
+                    return normalized;
+                };
+
+                try {
+                    workflow.graph = importGraphSafely(workflow.graph || getEmptyWorkflowGraph());
+                    try {
+                        await new Promise((resolve) => requestAnimationFrame(resolve));
+                        decorateAllPorts();
+                        hydrateNodeUIFromData();
+                        await new Promise((resolve) => requestAnimationFrame(resolve));
+                        decorateAllPorts();
+                    } catch (postLoadErr) {
+                        console.warn('Post-load decoration/hydration failed:', postLoadErr);
+                    }
+                    safeCreateIcons();
+                } catch (err) {
+                    console.error('Failed to load workflow. Resetting graph:', err);
+                    try {
+                        workflow.graph = getEmptyWorkflowGraph();
+                        await persistWorkflowStore(store);
+                        window.editor.import(workflow.graph);
+                        decorateAllPorts();
+                        safeCreateIcons();
+                    } catch (resetErr) {
+                        console.error('Failed to recover workflow graph:', resetErr);
+                    }
+                }
+            };
+
+            const saveActiveWorkflow = async (store, showAlert = false) => {
+                const target = store.workflows.find(w => w.id === store.activeId);
+                if (!target) return false;
+
+                const graph = captureNodeUIIntoGraph(window.editor.export());
+                target.graph = graph;
+                target.updatedAt = new Date().toISOString();
+                store.updatedAt = target.updatedAt;
+                const saved = await persistWorkflowStore(store);
+                if (!saved) {
+                    const detail = lastWorkflowPersistError ? `\nReason: ${lastWorkflowPersistError}` : '';
+                    alert('Failed to save workflow to server.' + detail);
+                    return false;
+                }
+
+                if (showAlert) {
+                    alert(`Saved: ${target.name}`);
+                }
+                return true;
+            };
+
+            let autosaveTimer = null;
+            const scheduleWorkflowAutosave = (delayMs = 700) => {
+                if (!workflowStore || !workflowStore.activeId) return;
+                if (autosaveTimer) clearTimeout(autosaveTimer);
+                autosaveTimer = setTimeout(() => {
+                    saveActiveWorkflow(workflowStore, false).catch((err) => {
+                        console.warn('Workflow autosave failed:', err);
+                    });
+                }, delayMs);
+            };
+
+            let workflowStore = await readWorkflowStore();
+            await persistWorkflowStore(workflowStore);
+            renderWorkflowOptions(workflowStore);
+            await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+
+            workflowSelect.onchange = async (e) => {
+                await saveActiveWorkflow(workflowStore, false);
+                workflowStore.activeId = e.target.value;
+                await persistWorkflowStore(workflowStore);
+                renderWorkflowOptions(workflowStore);
+                await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+            };
+
+            newWorkflowBtn.onclick = async () => {
+                await saveActiveWorkflow(workflowStore, false);
+                const suggested = `Workflow ${workflowStore.workflows.length + 1}`;
+                const name = prompt('New workflow name:', suggested);
+                if (name === null) return;
+
+                const created = createWorkflowEntry((name || suggested).trim(), getEmptyWorkflowGraph());
+                workflowStore.workflows.push(created);
+                workflowStore.activeId = created.id;
+                await persistWorkflowStore(workflowStore);
+                renderWorkflowOptions(workflowStore);
+                await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+            };
+
+            saveWorkflowBtn.onclick = async () => {
+                await saveActiveWorkflow(workflowStore, true);
+            };
+
+            saveAsWorkflowBtn.onclick = async () => {
+                await saveActiveWorkflow(workflowStore, false);
+                const base = workflowStore.workflows.find(w => w.id === workflowStore.activeId);
+                const suggested = base ? `${base.name} Copy` : `Workflow ${workflowStore.workflows.length + 1}`;
+                const name = prompt('Save as workflow name:', suggested);
+                if (name === null) return;
+
+                const copiedGraph = captureNodeUIIntoGraph(window.editor.export());
+                const created = createWorkflowEntry((name || suggested).trim(), copiedGraph);
+                workflowStore.workflows.push(created);
+                workflowStore.activeId = created.id;
+                await persistWorkflowStore(workflowStore);
+                renderWorkflowOptions(workflowStore);
+                await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+                alert(`Saved as: ${created.name}`);
+            };
+
+            deleteWorkflowBtn.onclick = async () => {
+                if (workflowStore.workflows.length <= 1) {
+                    alert('At least one workflow must remain.');
+                    return;
+                }
+                const target = workflowStore.workflows.find(w => w.id === workflowStore.activeId);
+                if (!target) return;
+
+                const ok = confirm(`Delete workflow "${target.name}"?`);
+                if (!ok) return;
+
+                workflowStore.workflows = workflowStore.workflows.filter(w => w.id !== target.id);
+                workflowStore.activeId = workflowStore.workflows[0].id;
+                await persistWorkflowStore(workflowStore);
+                renderWorkflowOptions(workflowStore);
+                await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+            };
+
+            const textPreviewModal = document.getElementById('workflowTextPreviewModal');
+            const textPreviewInput = document.getElementById('workflowTextPreviewInput');
+            const closeTextPreviewBtn = document.getElementById('closeWorkflowTextPreviewBtn');
+            const applyTextPreviewBtn = document.getElementById('applyWorkflowTextPreviewBtn');
+            let activePreviewTextarea = null;
+
+            const closeAllTextPalettes = () => {
+                container.querySelectorAll('.node-text-color-palette.open').forEach((el) => {
+                    el.classList.remove('open');
+                });
+            };
+
+            const openTextPreviewModal = (textareaEl) => {
+                if (!textPreviewModal || !textPreviewInput || !textareaEl) return;
+                activePreviewTextarea = textareaEl;
+                textPreviewInput.value = textareaEl.value || '';
+                textPreviewModal.classList.remove('hidden');
+                textPreviewInput.focus();
+            };
+
+            const closeTextPreviewModal = (applyChanges = false) => {
+                if (!textPreviewModal || !textPreviewInput) return;
+                if (applyChanges && activePreviewTextarea) {
+                    activePreviewTextarea.value = textPreviewInput.value;
+                    scheduleWorkflowAutosave();
+                }
+                textPreviewModal.classList.add('hidden');
+                if (activePreviewTextarea) activePreviewTextarea.focus();
+                activePreviewTextarea = null;
+            };
+
+            if (closeTextPreviewBtn) {
+                closeTextPreviewBtn.onclick = () => closeTextPreviewModal(false);
+            }
+            if (applyTextPreviewBtn) {
+                applyTextPreviewBtn.onclick = () => closeTextPreviewModal(true);
+            }
+            if (textPreviewModal) {
+                textPreviewModal.addEventListener('click', (e) => {
+                    if (e.target === textPreviewModal) closeTextPreviewModal(false);
+                });
+            }
+
             // Toggle Overlay
             const overlay = document.getElementById('nodeAddOverlay');
             const icon = document.getElementById('floatingAddIcon');
             let isOverlayOpen = false;
+            const contextMenu = document.getElementById('workflowContextMenu');
+            const contextSearch = document.getElementById('workflowContextSearch');
+            const drawflowContainer = document.getElementById('drawflow-container');
+            let isSpacePanning = false;
+
+            const setSpacePanState = (enabled) => {
+                isSpacePanning = enabled;
+                if (drawflowContainer) {
+                    drawflowContainer.classList.toggle('space-pan-active', enabled);
+                    if (!enabled) drawflowContainer.classList.remove('space-pan-dragging');
+                }
+            };
+
+            if (window.__workflowKeydownHandler) {
+                document.removeEventListener('keydown', window.__workflowKeydownHandler);
+            }
+            if (window.__workflowKeyupHandler) {
+                document.removeEventListener('keyup', window.__workflowKeyupHandler);
+            }
+            if (window.__workflowMouseupHandler) {
+                window.removeEventListener('mouseup', window.__workflowMouseupHandler);
+            }
+
+            window.__workflowKeydownHandler = (evt) => {
+                if (evt.code !== 'Space') return;
+                const target = evt.target;
+                const tag = target?.tagName ? target.tagName.toLowerCase() : '';
+                const isTypingTarget = tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable;
+                if (isTypingTarget) return;
+                evt.preventDefault();
+                setSpacePanState(true);
+            };
+
+            window.__workflowKeyupHandler = (evt) => {
+                if (evt.code !== 'Space') return;
+                setSpacePanState(false);
+            };
+
+            document.addEventListener('keydown', window.__workflowKeydownHandler);
+            document.addEventListener('keyup', window.__workflowKeyupHandler);
+            window.__workflowMouseupHandler = () => {
+                if (drawflowContainer) drawflowContainer.classList.remove('space-pan-dragging');
+            };
+            window.addEventListener('mouseup', window.__workflowMouseupHandler);
+            let activeResize = null;
 
             document.getElementById('floatingAddBtn').addEventListener('click', () => {
                 isOverlayOpen = !isOverlayOpen;
@@ -492,12 +1224,36 @@ document.addEventListener('DOMContentLoaded', () => {
                     overlay.classList.add('hidden');
                     icon.classList.remove('rotate-45');
                 }
+                if (contextMenu && !contextMenu.classList.contains('hidden')) {
+                    contextMenu.classList.add('hidden');
+                }
             });
 
             const hideOverlay = () => {
                 isOverlayOpen = false;
                 overlay.classList.add('hidden');
                 icon.classList.remove('rotate-45');
+            };
+
+            const hideContextMenu = () => {
+                if (!contextMenu) return;
+                contextMenu.classList.add('hidden');
+                if (contextSearch) contextSearch.value = '';
+                if (contextMenu) {
+                    contextMenu.querySelectorAll('.workflow-menu-item').forEach((item) => {
+                        item.classList.remove('hidden');
+                    });
+                }
+            };
+
+            const clientToDrawflowPosition = (clientX, clientY) => {
+                const precanvas = window.editor.precanvas;
+                if (!precanvas || !window.editor.zoom) return { x: 150, y: 200 };
+
+                const zoom = window.editor.zoom;
+                const x = clientX * (precanvas.clientWidth / (precanvas.clientWidth * zoom)) - precanvas.getBoundingClientRect().x * (precanvas.clientWidth / (precanvas.clientWidth * zoom));
+                const y = clientY * (precanvas.clientHeight / (precanvas.clientHeight * zoom)) - precanvas.getBoundingClientRect().y * (precanvas.clientHeight / (precanvas.clientHeight * zoom));
+                return { x: Math.round(x), y: Math.round(y) };
             };
 
             // Auto-position nodes based on canvas center
@@ -510,30 +1266,318 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (spawnX > 600) { spawnX = 150; spawnY = 200; }
             };
 
-            // Add node creation events - Inputs
-            document.getElementById('addNodeTextInputBtn').addEventListener('click', () => {
+            const PORT_LABEL_MAP = {
+                text_input: { output: 'T' },
+                image_input: { output: 'IMG' },
+                video_input: { output: 'VID' },
+                generator: { input: 'IN', output: 'OUT' },
+                prompt_gen: { input: 'IN', output: 'TXT' },
+                image_gen: { input: 'IN', output: 'IMG' },
+                video_gen: { input: 'IN', output: 'VID' },
+                base_gen: { input: 'IN', output: 'IMG' },
+                modifier: { input: 'IN', output: 'OUT' },
+                output_result: { input: 'OUT' }
+            };
+
+            const decorateNodePorts = (nodeId, nodeName) => {
+                const nodeEl = document.getElementById(`node-${nodeId}`);
+                if (!nodeEl) return;
+                const meta = PORT_LABEL_MAP[nodeName] || {};
+
+                const setPortBadge = (portEl, kind, value) => {
+                    if (!portEl) return;
+                    portEl.innerHTML = '';
+                    const badge = document.createElement('span');
+                    badge.className = 'port-badge';
+                    if (kind === 'icon') {
+                        badge.innerHTML = `<i data-lucide="${value}" class="w-3 h-3"></i>`;
+                    } else {
+                        badge.textContent = value;
+                    }
+                    portEl.appendChild(badge);
+                };
+
+                nodeEl.querySelectorAll('.outputs .output').forEach((portEl) => {
+                    if (nodeName === 'text_input') setPortBadge(portEl, 'text', 'T');
+                    else if (nodeName === 'image_input') setPortBadge(portEl, 'icon', 'image');
+                    else if (nodeName === 'video_input') setPortBadge(portEl, 'icon', 'video');
+                    else setPortBadge(portEl, 'text', meta.output || 'OUT');
+                });
+                nodeEl.querySelectorAll('.inputs .input').forEach((portEl, idx) => {
+                    if (nodeName === 'generator') {
+                        // generator: input_1 text, input_2 image reference
+                        if (idx === 0) setPortBadge(portEl, 'text', 'T');
+                        else setPortBadge(portEl, 'icon', 'image');
+                        return;
+                    }
+                    setPortBadge(portEl, 'text', meta.input || 'IN');
+                });
+                safeCreateIcons();
+            };
+
+            const applyNodeSize = (nodeEl, width, height) => {
+                if (!nodeEl) return;
+                const minWidth = nodeEl.classList.contains('generator') ? 460 : 220;
+                const minHeight = nodeEl.classList.contains('generator') ? 280 : 120;
+                const w = Math.max(minWidth, Number(width) || nodeEl.offsetWidth || minWidth);
+                const h = Math.max(minHeight, Number(height) || nodeEl.offsetHeight || minHeight);
+                nodeEl.style.width = `${Math.round(w)}px`;
+                nodeEl.style.height = `${Math.round(h)}px`;
+                const content = nodeEl.querySelector('.drawflow_content_node');
+                if (content) {
+                    content.style.minHeight = `${Math.round(h)}px`;
+                    content.style.height = `${Math.round(h)}px`;
+                }
+
+                // Keep inner UIs in sync so vertical resize is visible.
+                const textArea = nodeEl.querySelector('.node-input-text');
+                if (textArea) {
+                    const textHeight = Math.max(84, h - 62);
+                    textArea.style.height = `${Math.round(textHeight)}px`;
+                }
+
+                const genStage = nodeEl.querySelector('.node-generator-stage');
+                if (genStage) {
+                    const stageHeight = Math.max(200, h - 112);
+                    genStage.style.height = `${Math.round(stageHeight)}px`;
+                }
+            };
+
+            const ensureNodeResizeHandle = (nodeId) => {
+                const nodeEl = document.getElementById(`node-${nodeId}`);
+                if (!nodeEl) return;
+                if (nodeEl.querySelector('.node-resize-handle')) return;
+                const handle = document.createElement('div');
+                handle.className = 'node-resize-handle';
+                nodeEl.appendChild(handle);
+            };
+
+            const decorateAllPorts = () => {
+                try {
+                    const exportData = window.editor.export();
+                    const nodes = exportData?.drawflow?.Home?.data || {};
+                    Object.entries(nodes).forEach(([id, node]) => {
+                        decorateNodePorts(id, node.name);
+                        ensureNodeResizeHandle(id);
+                    });
+                } catch (err) {
+                    console.warn('decorateAllPorts skipped due to editor state:', err);
+                }
+            };
+
+            const HEADING_STYLE_MAP = {
+                h1: { fontSize: '40px', lineHeight: '1.12', baseWeight: '800' },
+                h2: { fontSize: '30px', lineHeight: '1.16', baseWeight: '700' },
+                h3: { fontSize: '16px', lineHeight: '1.3', baseWeight: '700' }
+            };
+
+            const getTextStyleState = (textEl) => ({
+                heading: textEl.dataset.heading || 'h3',
+                bold: textEl.dataset.bold === 'true',
+                italic: textEl.dataset.italic === 'true',
+                underline: textEl.dataset.underline === 'true',
+                listType: textEl.dataset.listType || ''
+            });
+
+            const applyTextVisualStyle = (textEl, styleState = {}) => {
+                if (!textEl) return;
+                const merged = {
+                    heading: styleState.heading || 'h3',
+                    bold: !!styleState.bold,
+                    italic: !!styleState.italic,
+                    underline: !!styleState.underline,
+                    listType: styleState.listType || ''
+                };
+
+                const headingStyle = HEADING_STYLE_MAP[merged.heading] || HEADING_STYLE_MAP.h3;
+                const computedWeight = merged.bold ? '900' : headingStyle.baseWeight;
+
+                textEl.dataset.heading = merged.heading;
+                textEl.dataset.bold = String(merged.bold);
+                textEl.dataset.italic = String(merged.italic);
+                textEl.dataset.underline = String(merged.underline);
+                textEl.dataset.listType = merged.listType;
+
+                textEl.style.fontSize = headingStyle.fontSize;
+                textEl.style.lineHeight = headingStyle.lineHeight;
+                textEl.style.fontWeight = computedWeight;
+                textEl.style.fontStyle = merged.italic ? 'italic' : 'normal';
+                textEl.style.textDecoration = merged.underline ? 'underline' : 'none';
+            };
+
+            const applyListFormatting = (textareaEl, mode) => {
+                if (!textareaEl) return;
+                const value = textareaEl.value || '';
+                const hasSelection = textareaEl.selectionEnd > textareaEl.selectionStart;
+                const start = hasSelection ? textareaEl.selectionStart : 0;
+                const end = hasSelection ? textareaEl.selectionEnd : value.length;
+                const selected = value.slice(start, end);
+                const lines = selected.split('\n');
+
+                if (mode === 'bullet') {
+                    const allBulleted = lines.every((line) => line.trim() === '' || /^\s*-\s+/.test(line));
+                    const next = allBulleted
+                        ? lines.map((line) => line.replace(/^(\s*)-\s+/, '$1'))
+                        : lines.map((line) => line.trim() ? `- ${line.replace(/^(\s*)-\s+/, '')}` : line);
+                    textareaEl.value = value.slice(0, start) + next.join('\n') + value.slice(end);
+                    textareaEl.dataset.listType = allBulleted ? '' : 'bullet';
+                } else if (mode === 'number') {
+                    const allNumbered = lines.every((line) => line.trim() === '' || /^\s*\d+\.\s+/.test(line));
+                    const next = allNumbered
+                        ? lines.map((line) => line.replace(/^(\s*)\d+\.\s+/, '$1'))
+                        : lines.map((line, idx) => line.trim() ? `${idx + 1}. ${line.replace(/^(\s*)\d+\.\s+/, '')}` : line);
+                    textareaEl.value = value.slice(0, start) + next.join('\n') + value.slice(end);
+                    textareaEl.dataset.listType = allNumbered ? '' : 'number';
+                }
+                textareaEl.focus();
+            };
+
+            function getModelOptionsForOutputType(outputType) {
+                const modelOptions = {
+                    image: [
+                        { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Image' },
+                        { value: 'gemini-2.5-flash-image-preview', label: 'Gemini 2.5 Flash Image' }
+                    ],
+                    prompt: [
+                        { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Prompt)' },
+                        { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (Prompt)' }
+                    ],
+                    video: [
+                        { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Video Prompt)' },
+                        { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (Video Prompt)' }
+                    ]
+                };
+                if (outputType === 'prompt') return modelOptions.prompt;
+                if (outputType === 'video') return modelOptions.video;
+                return modelOptions.image;
+            }
+
+            function buildModelOptionsHtml(outputType, selectedModel) {
+                const options = getModelOptionsForOutputType(outputType);
+                const fallbackValue = options[0]?.value || '';
+                const selectedValue = options.some((o) => o.value === selectedModel) ? selectedModel : fallbackValue;
+                return options.map((o) => `<option value="${o.value}" ${o.value === selectedValue ? 'selected' : ''}>${o.label}</option>`).join('');
+            }
+
+            function syncGeneratorModelOptions(nodeEl) {
+                if (!nodeEl) return;
+                const outputTypeEl = nodeEl.querySelector('.node-output-type');
+                const modelEl = nodeEl.querySelector('.node-input-model');
+                if (!outputTypeEl || !modelEl) return;
+                const outputType = outputTypeEl.value || 'image';
+                const previous = modelEl.value;
+                modelEl.innerHTML = buildModelOptionsHtml(outputType, previous);
+            }
+
+            function setGeneratorView(nodeEl, view) {
+                if (!nodeEl) return;
+                const promptEl = nodeEl.querySelector('.node-gen-prompt');
+                const resultEl = nodeEl.querySelector('.node-result-container');
+                if (!promptEl || !resultEl) return;
+
+                const nextView = view === 'result' ? 'result' : 'prompt';
+                nodeEl.dataset.generatorView = nextView;
+
+                if (nextView === 'result') {
+                    promptEl.classList.add('hidden');
+                    resultEl.classList.remove('hidden');
+                } else {
+                    promptEl.classList.remove('hidden');
+                    if ((resultEl.innerHTML || '').trim() === '') {
+                        resultEl.classList.add('hidden');
+                    }
+                }
+
+                nodeEl.querySelectorAll('.node-view-toggle-btn').forEach((btn) => {
+                    const active = btn.dataset.view === nextView;
+                    btn.classList.toggle('bg-zinc-700', active);
+                    btn.classList.toggle('text-zinc-100', active);
+                    btn.classList.toggle('text-zinc-400', !active);
+                });
+            }
+
+            const addTextInputNode = (x = spawnX, y = spawnY) => {
+                const defaultBg = '#18181b';
                 const html = `
-                    <div>
-                        <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2"><i data-lucide="type" class="w-4 h-4 text-zinc-400"></i> Text Input</div>
-                        <div class="box">
-                            <textarea class="w-full bg-black/40 border border-zinc-700 rounded p-2 text-xs text-white h-20 outline-none custom-scrollbar node-input-text" placeholder="Enter text here..."></textarea>
+                    <div class="relative p-2">
+                        <div class="node-card">
+                            <div class="title-box border-b border-zinc-700 mb-0 flex items-center gap-2">
+                                <i data-lucide="type" class="w-4 h-4 text-emerald-400"></i>
+                                <span>Text Input</span>
+                                <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
+                                    <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                                </button>
+                            </div>
+                            <div class="box p-3">
+                                <textarea class="w-full node-surface border border-zinc-700 rounded-xl px-4 py-3 text-zinc-100 h-24 outline-none custom-scrollbar node-input-text resize-none focus:border-blue-500/90 focus:ring-1 focus:ring-blue-500/60" style="background:${defaultBg};" placeholder="UGC AD video campaign eyewear" data-heading="h3" data-bold="false" data-italic="false" data-underline="false" data-list-type=""></textarea>
+                            </div>
+                        </div>
+                        <div class="node-text-toolbar absolute -top-11 left-1 right-1 items-center gap-1 bg-zinc-950/90 border border-zinc-800 rounded-xl px-2 py-1.5 z-30">
+                            <button type="button" data-text-action="run_workflow" class="w-6 h-6 rounded bg-zinc-800 hover:bg-zinc-700 flex items-center justify-center text-zinc-300"><i data-lucide="play" class="w-3.5 h-3.5"></i></button>
+                            <button type="button" data-text-action="toggle_color_palette" class="w-6 h-6 rounded hover:bg-zinc-800 flex items-center justify-center text-zinc-400"><i data-lucide="circle" class="w-3.5 h-3.5"></i></button>
+                            <button type="button" data-text-action="open_preview" class="w-6 h-6 rounded hover:bg-zinc-800 flex items-center justify-center text-zinc-400"><i data-lucide="expand" class="w-3.5 h-3.5"></i></button>
+                            <div class="w-px h-4 bg-zinc-700 mx-0.5"></div>
+                            <select class="node-heading-select bg-transparent text-xs text-zinc-300 outline-none">
+                                <option value="h1">Heading 1</option>
+                                <option value="h2">Heading 2</option>
+                                <option value="h3" selected>Heading 3</option>
+                            </select>
+                            <div class="w-px h-4 bg-zinc-700 mx-0.5"></div>
+                            <button type="button" data-text-action="bold" class="w-6 h-6 rounded hover:bg-zinc-800 flex items-center justify-center text-zinc-200 font-bold text-xs">B</button>
+                            <button type="button" data-text-action="italic" class="w-6 h-6 rounded hover:bg-zinc-800 flex items-center justify-center italic text-xs text-zinc-300">I</button>
+                            <button type="button" data-text-action="bullet_list" class="w-6 h-6 rounded hover:bg-zinc-800 flex items-center justify-center text-zinc-400"><i data-lucide="list" class="w-3.5 h-3.5"></i></button>
+                            <button type="button" data-text-action="numbered_list" class="w-6 h-6 rounded hover:bg-zinc-800 flex items-center justify-center text-zinc-400"><i data-lucide="list-ordered" class="w-3.5 h-3.5"></i></button>
+                            <button type="button" data-text-action="underline" class="w-6 h-6 rounded hover:bg-zinc-800 flex items-center justify-center text-zinc-300 text-[11px]">U</button>
+                        </div>
+
+                        <div class="node-text-color-palette absolute -top-20 left-2 items-center gap-1.5 bg-zinc-950/90 border border-zinc-800 rounded-full px-2 py-1.5 z-30">
+                            <button type="button" class="node-text-color-btn w-4 h-4 rounded-full border border-zinc-500/60 bg-zinc-900" data-color="#18181b"></button>
+                            <button type="button" class="node-text-color-btn w-4 h-4 rounded-full border border-zinc-500/60 bg-red-500" data-color="#7f1d1d"></button>
+                            <button type="button" class="node-text-color-btn w-4 h-4 rounded-full border border-zinc-500/60 bg-orange-500" data-color="#7c2d12"></button>
+                            <button type="button" class="node-text-color-btn w-4 h-4 rounded-full border border-zinc-500/60 bg-yellow-500" data-color="#78350f"></button>
+                            <button type="button" class="node-text-color-btn w-4 h-4 rounded-full border border-zinc-500/60 bg-green-500" data-color="#14532d"></button>
+                            <button type="button" class="node-text-color-btn w-4 h-4 rounded-full border border-zinc-500/60 bg-cyan-500" data-color="#164e63"></button>
+                            <button type="button" class="node-text-color-btn w-4 h-4 rounded-full border border-zinc-500/60 bg-blue-500" data-color="#1e3a8a"></button>
+                            <button type="button" class="node-text-color-btn w-4 h-4 rounded-full border border-zinc-500/60 bg-purple-500" data-color="#581c87"></button>
                         </div>
                     </div>
                 `;
-                window.editor.addNode('text_input', 0, 1, spawnX, spawnY, 'text_input', {}, html);
+                const textNodeId = window.editor.addNode('text_input', 0, 1, x, y, 'text_input', {
+                    text: '',
+                    textBg: defaultBg,
+                    textHeading: 'h3',
+                    textBold: false,
+                    textItalic: false,
+                    textUnderline: false,
+                    textListType: '',
+                    nodeWidth: 280,
+                    nodeHeight: 170
+                }, html);
+                decorateNodePorts(textNodeId, 'text_input');
+                ensureNodeResizeHandle(textNodeId);
+                applyNodeSize(document.getElementById(`node-${textNodeId}`), 280, 170);
                 incrementSpawn();
                 hideOverlay();
+                hideContextMenu();
                 safeCreateIcons();
-            });
+                scheduleWorkflowAutosave();
+            };
 
-            document.getElementById('addNodeImageInputBtn').addEventListener('click', () => {
+            const addImageInputNode = (x = spawnX, y = spawnY) => {
                 const html = `
                     <div>
-                        <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2"><i data-lucide="image" class="w-4 h-4 text-emerald-500"></i> Image Input</div>
+                        <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2">
+                            <i data-lucide="image" class="w-4 h-4 text-emerald-500"></i>
+                            <span>Image Input</span>
+                            <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
+                                <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
                         <div class="box">
-                            <div class="node-image-upload-area relative w-full h-24 border-2 border-dashed border-zinc-700 rounded-lg flex flex-col items-center justify-center bg-zinc-900/50 hover:bg-zinc-800 transition-colors cursor-pointer overflow-hidden group">
+                            <div class="node-image-upload-area node-surface relative w-full h-24 border-2 border-dashed border-zinc-700 rounded-lg flex flex-col items-center justify-center bg-zinc-900/50 hover:bg-zinc-800 transition-colors cursor-pointer overflow-hidden group">
                                 <i data-lucide="upload-cloud" class="w-6 h-6 text-zinc-500 mb-1 group-hover:text-emerald-500 transition-colors"></i>
                                 <span class="text-[10px] text-zinc-500 group-hover:text-emerald-400 transition-colors">Click to upload</span>
+                                <button type="button" class="node-open-library-btn absolute left-2 bottom-2 px-2 py-1 rounded-md bg-zinc-900/90 border border-zinc-700 text-[10px] text-zinc-300 hover:text-white hover:border-zinc-500 z-10">Library</button>
                                 <img class="node-image-preview hidden absolute inset-0 w-full h-full object-cover">
                                 <button class="node-image-remove hidden absolute top-1 right-1 p-1 bg-black/60 rounded text-red-400 hover:text-red-300 backdrop-blur-sm z-10"><i data-lucide="x" class="w-3 h-3"></i></button>
                                 <input type="file" accept="image/*" class="hidden node-file-input">
@@ -541,18 +1585,29 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                     </div>
                 `;
-                window.editor.addNode('image_input', 0, 1, spawnX, spawnY, 'image_input', { imageBase64: null }, html);
+                const imageNodeId = window.editor.addNode('image_input', 0, 1, x, y, 'image_input', { imageBase64: null, nodeWidth: 280, nodeHeight: 180 }, html);
+                decorateNodePorts(imageNodeId, 'image_input');
+                ensureNodeResizeHandle(imageNodeId);
+                applyNodeSize(document.getElementById(`node-${imageNodeId}`), 280, 180);
                 incrementSpawn();
                 hideOverlay();
+                hideContextMenu();
                 safeCreateIcons();
-            });
+                scheduleWorkflowAutosave();
+            };
 
-            document.getElementById('addNodeVideoInputBtn').addEventListener('click', () => {
+            const addVideoInputNode = (x = spawnX, y = spawnY) => {
                 const html = `
                     <div>
-                        <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2"><i data-lucide="video" class="w-4 h-4 text-blue-500"></i> Video Input</div>
+                        <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2">
+                            <i data-lucide="video" class="w-4 h-4 text-blue-500"></i>
+                            <span>Video Input</span>
+                            <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
+                                <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
                         <div class="box">
-                            <div class="node-video-upload-area relative w-full h-24 border-2 border-dashed border-zinc-700 rounded-lg flex flex-col items-center justify-center bg-zinc-900/50 hover:bg-zinc-800 transition-colors cursor-pointer overflow-hidden group">
+                            <div class="node-video-upload-area node-surface relative w-full h-24 border-2 border-dashed border-zinc-700 rounded-lg flex flex-col items-center justify-center bg-zinc-900/50 hover:bg-zinc-800 transition-colors cursor-pointer overflow-hidden group">
                                 <i data-lucide="upload-cloud" class="w-6 h-6 text-zinc-500 mb-1 group-hover:text-blue-500 transition-colors"></i>
                                 <span class="text-[10px] text-zinc-500 group-hover:text-blue-400 transition-colors">Click to upload</span>
                                 <video class="node-video-preview hidden absolute inset-0 w-full h-full object-cover" controls></video>
@@ -562,77 +1617,379 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                     </div>
                 `;
-                window.editor.addNode('video_input', 0, 1, spawnX, spawnY, 'video_input', { videoUrl: null }, html);
+                const videoNodeId = window.editor.addNode('video_input', 0, 1, x, y, 'video_input', { videoUrl: null, nodeWidth: 280, nodeHeight: 180 }, html);
+                decorateNodePorts(videoNodeId, 'video_input');
+                ensureNodeResizeHandle(videoNodeId);
+                applyNodeSize(document.getElementById(`node-${videoNodeId}`), 280, 180);
                 incrementSpawn();
                 hideOverlay();
+                hideContextMenu();
                 safeCreateIcons();
-            });
+                scheduleWorkflowAutosave();
+            };
 
-            // Add node creation events - Generator (Unified)
-            document.getElementById('addNodeGeneratorBtn').addEventListener('click', () => {
+            const addGeneratorNode = (x = spawnX + 250, y = spawnY, defaults = {}) => {
+                const selectedType = defaults.outputType || 'image';
+                const selectedModel = defaults.modelId || getModelOptionsForOutputType(selectedType)[0]?.value || 'gemini-3-pro-image-preview';
+                const agentPrompt = defaults.agentPrompt || '';
+                const textPrompt = defaults.textPrompt || '';
+                const count = Number(defaults.count || 1);
+                const style = defaults.style || 'auto';
+                const ratio = defaults.aspectRatio || '16:9';
+                const resolution = defaults.resolution || '1K';
                 const html = `
                     <div>
-                        <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2"><i data-lucide="wand-sparkles" class="w-4 h-4 text-purple-500"></i> Generator</div>
-                        <div class="box">
-                            <span class="text-[10px] text-zinc-500 mb-1 block">Output Type</span>
-                            <select class="w-full bg-black/40 border border-zinc-700 rounded p-1 text-xs text-zinc-400 outline-none mb-2 node-output-type">
-                                <option value="image">Image</option>
-                                <option value="prompt">Prompt</option>
-                                <option value="video">Video</option>
-                            </select>
-                            <span class="text-[10px] text-zinc-500 mb-1 block">Model (Image Mode)</span>
-                            <select class="w-full bg-black/40 border border-zinc-700 rounded p-1 text-xs text-zinc-400 outline-none mb-2 node-input-model">
-                                <option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
-                                <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-                            </select>
-                            <span class="text-[10px] text-zinc-500 mb-1 block">Agent Prompt</span>
-                            <textarea class="w-full bg-black/40 border border-zinc-700 rounded p-2 text-xs text-white h-16 outline-none custom-scrollbar node-agent-prompt mb-2" placeholder="Role/instruction for generator agent..."></textarea>
-                            <span class="text-[10px] text-zinc-500 mb-1 block">Text Prompt</span>
-                            <textarea class="w-full bg-black/40 border border-zinc-700 rounded p-2 text-xs text-white h-20 outline-none custom-scrollbar node-input-prompt mb-2" placeholder="Base prompt text..."></textarea>
-                            <div class="node-result-container hidden mt-2 rounded overflow-hidden"></div>
-                            <span class="text-[10px] text-zinc-500 italic mt-1 block NodeStatusStatus">Waiting...</span>
+                        <div class="node-card p-0">
+                            <div class="title-box border-b border-zinc-700 pb-2 mb-0 flex items-center gap-2">
+                                <i data-lucide="image-plus" class="w-4 h-4 text-blue-400"></i>
+                                <span>Image Generator</span>
+                                <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
+                                    <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                                </button>
+                            </div>
+                            <div class="box pt-2">
+                                <textarea class="hidden node-agent-prompt">${agentPrompt}</textarea>
+
+                                <div class="node-generator-stage node-surface relative mb-3 min-h-[200px] border border-blue-500/80 rounded-2xl bg-[#17181b] overflow-hidden">
+                                    <div class="absolute top-2 left-2 z-20 flex items-center gap-1 rounded-lg bg-zinc-900/90 border border-zinc-700 px-1.5 py-1">
+                                        <button type="button" class="node-view-toggle-btn w-7 h-7 rounded-md bg-zinc-700 text-zinc-100 flex items-center justify-center" data-view="prompt" title="Prompt View">
+                                            <i data-lucide="pen-line" class="w-3.5 h-3.5"></i>
+                                        </button>
+                                        <button type="button" class="node-view-toggle-btn w-7 h-7 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/70 flex items-center justify-center" data-view="result" title="Result View">
+                                            <i data-lucide="layout-panel-top" class="w-3.5 h-3.5"></i>
+                                        </button>
+                                    </div>
+                                    <div class="node-result-container hidden absolute inset-0 p-2"></div>
+                                    <img class="node-generator-reference-preview hidden absolute inset-0 w-full h-full object-cover opacity-45">
+                                    <button type="button" class="node-generator-reference-remove hidden absolute top-2 right-2 p-1.5 bg-black/60 rounded-full text-red-300 hover:text-red-200">
+                                        <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                                    </button>
+                                    <textarea class="node-gen-prompt w-full h-full bg-transparent px-4 pt-14 pb-14 text-sm text-zinc-100 outline-none resize-none custom-scrollbar" placeholder="Describe the image you want to generate...">${textPrompt}</textarea>
+
+                                    <div class="absolute left-3 bottom-3 flex items-center gap-2">
+                                        <div class="flex items-center rounded-full bg-zinc-800/95 border border-zinc-700 px-1 py-1">
+                                            <button type="button" class="node-gen-count-dec w-6 h-6 rounded-full text-zinc-300 hover:bg-zinc-700">-</button>
+                                            <input type="number" min="1" max="8" value="${count}" class="node-gen-count w-8 bg-transparent text-center text-xs font-bold text-zinc-100 outline-none">
+                                            <button type="button" class="node-gen-count-inc w-6 h-6 rounded-full text-zinc-300 hover:bg-zinc-700">+</button>
+                                        </div>
+                                        <select class="node-gen-style bg-zinc-800/95 border border-zinc-700 rounded-full px-3 py-1.5 text-xs text-zinc-200 outline-none">
+                                            <option value="auto" ${style === 'auto' ? 'selected' : ''}>Auto</option>
+                                            <option value="cinematic" ${style === 'cinematic' ? 'selected' : ''}>Cinematic</option>
+                                            <option value="standard" ${style === 'standard' ? 'selected' : ''}>Standard</option>
+                                        </select>
+                                        <select class="node-gen-ratio bg-zinc-800/95 border border-zinc-700 rounded-full px-3 py-1.5 text-xs text-zinc-200 outline-none">
+                                            <option value="16:9" ${ratio === '16:9' ? 'selected' : ''}>16:9</option>
+                                            <option value="1:1" ${ratio === '1:1' ? 'selected' : ''}>1:1</option>
+                                            <option value="9:16" ${ratio === '9:16' ? 'selected' : ''}>9:16</option>
+                                            <option value="4:5" ${ratio === '4:5' ? 'selected' : ''}>4:5</option>
+                                        </select>
+                                        <select class="node-gen-resolution bg-zinc-800/95 border border-zinc-700 rounded-full px-3 py-1.5 text-xs text-zinc-200 outline-none">
+                                            <option value="1K" ${resolution === '1K' ? 'selected' : ''}>1K</option>
+                                            <option value="2K" ${resolution === '2K' ? 'selected' : ''}>2K</option>
+                                            <option value="4K" ${resolution === '4K' ? 'selected' : ''}>4K</option>
+                                        </select>
+                                    </div>
+
+                                    <button type="button" class="node-generator-options-toggle absolute right-3 bottom-3 w-9 h-9 rounded-full bg-zinc-100 text-black flex items-center justify-center">
+                                        <i data-lucide="settings-2" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+
+                                <div class="node-generator-options-panel hidden bg-zinc-900/80 border border-zinc-700 rounded-xl p-3 space-y-2 mb-2">
+                                    <div class="text-[10px] uppercase tracking-wider text-zinc-500">Image Generator Options</div>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <label class="text-[11px] text-zinc-300">Model
+                                            <select class="node-input-model mt-1 w-full bg-black/40 border border-zinc-700 rounded p-1.5 text-xs text-zinc-300 outline-none">
+                                                ${buildModelOptionsHtml(selectedType, selectedModel)}
+                                            </select>
+                                        </label>
+                                        <label class="text-[11px] text-zinc-300">Output
+                                            <select class="node-output-type mt-1 w-full bg-black/40 border border-zinc-700 rounded p-1.5 text-xs text-zinc-300 outline-none">
+                                                <option value="image" ${selectedType === 'image' ? 'selected' : ''}>Image</option>
+                                                <option value="prompt" ${selectedType === 'prompt' ? 'selected' : ''}>Prompt</option>
+                                                <option value="video" ${selectedType === 'video' ? 'selected' : ''}>Video</option>
+                                            </select>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <span class="text-[10px] text-zinc-500 italic mt-1 block NodeStatusStatus">Waiting...</span>
+                            </div>
                         </div>
                     </div>
                 `;
-                window.editor.addNode('generator', 1, 1, spawnX + 250, spawnY, 'generator', {}, html);
+                const generatorNodeId = window.editor.addNode('generator', 2, 1, x, y, 'generator', {
+                    outputType: selectedType,
+                    modelId: selectedModel,
+                    agentPrompt,
+                    textPrompt,
+                    generatorView: defaults.generatorView || 'prompt',
+                    nodeWidth: 620,
+                    nodeHeight: 520
+                }, html);
+                decorateNodePorts(generatorNodeId, 'generator');
+                ensureNodeResizeHandle(generatorNodeId);
+                const generatorNodeEl = document.getElementById(`node-${generatorNodeId}`);
+                syncGeneratorModelOptions(generatorNodeEl);
+                setGeneratorView(generatorNodeEl, defaults.generatorView || 'prompt');
+                applyNodeSize(generatorNodeEl, 620, 520);
                 incrementSpawn();
                 hideOverlay();
+                hideContextMenu();
                 safeCreateIcons();
-            });
+                scheduleWorkflowAutosave();
+            };
 
-            // Add node creation events - Output
-            document.getElementById('addNodeOutputBtn').addEventListener('click', () => {
+            const addOutputNode = (x = spawnX + 500, y = spawnY) => {
                 const html = `
                     <div>
-                        <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2"><i data-lucide="monitor-play" class="w-4 h-4 text-yellow-500"></i> Output Result</div>
+                        <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2">
+                            <i data-lucide="monitor-play" class="w-4 h-4 text-yellow-500"></i>
+                            <span>Output Result</span>
+                            <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
+                                <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
                         <div class="box min-w-[150px]">
                             <span class="text-[10px] text-zinc-500 mb-1 block">Final Result Display</span>
-                            <div class="node-output-display min-h-[60px] bg-black/40 border border-zinc-700 rounded text-xs text-white p-2 break-all custom-scrollbar overflow-y-auto max-h-[150px] flex items-center justify-center text-zinc-600">No Data</div>
+                            <div class="node-output-display node-surface min-h-[60px] bg-black/40 border border-zinc-700 rounded text-xs text-white p-2 break-all custom-scrollbar overflow-y-auto max-h-[150px] flex items-center justify-center text-zinc-600">No Data</div>
                         </div>
                     </div>
                 `;
                 // 1 Input (any), 0 Output
-                window.editor.addNode('output_result', 1, 0, spawnX + 500, spawnY, 'output_result', {}, html);
+                const outputNodeId = window.editor.addNode('output_result', 1, 0, x, y, 'output_result', { nodeWidth: 280, nodeHeight: 170 }, html);
+                decorateNodePorts(outputNodeId, 'output_result');
+                ensureNodeResizeHandle(outputNodeId);
+                applyNodeSize(document.getElementById(`node-${outputNodeId}`), 280, 170);
                 incrementSpawn();
                 hideOverlay();
+                hideContextMenu();
                 safeCreateIcons();
+                scheduleWorkflowAutosave();
+            };
+
+            // Floating add menu bindings
+            document.getElementById('addNodeTextInputBtn').addEventListener('click', () => addTextInputNode());
+            document.getElementById('addNodeImageInputBtn').addEventListener('click', () => addImageInputNode());
+            document.getElementById('addNodeVideoInputBtn').addEventListener('click', () => addVideoInputNode());
+            document.getElementById('addNodeGeneratorBtn').addEventListener('click', () => addGeneratorNode());
+            document.getElementById('addNodeOutputBtn').addEventListener('click', () => addOutputNode());
+
+            // Right-click menu logic
+            const openContextMenu = (event) => {
+                if (!contextMenu || !drawflowContainer) return;
+                event.preventDefault();
+                event.stopPropagation();
+                hideOverlay();
+
+                const rect = drawflowContainer.getBoundingClientRect();
+                const menuWidth = 288;
+                const menuHeight = 460;
+                let left = event.clientX - rect.left;
+                let top = event.clientY - rect.top;
+
+                if (left + menuWidth > rect.width - 8) left = rect.width - menuWidth - 8;
+                if (top + menuHeight > rect.height - 8) top = rect.height - menuHeight - 8;
+                if (left < 8) left = 8;
+                if (top < 8) top = 8;
+
+                contextMenu.style.left = `${Math.round(left)}px`;
+                contextMenu.style.top = `${Math.round(top)}px`;
+                contextMenu.classList.remove('hidden');
+
+                const pos = clientToDrawflowPosition(event.clientX, event.clientY);
+                spawnX = pos.x;
+                spawnY = pos.y;
+
+                if (contextSearch) {
+                    contextSearch.value = '';
+                    contextSearch.focus();
+                }
+            };
+
+            container.addEventListener('contextmenu', openContextMenu);
+
+            // Prevent canvas panning by default. Panning is allowed only while Space is held.
+            const clearNodeSelection = (opts = {}) => {
+                const keepNode = opts.keepNode || null;
+                const keepFocus = !!opts.keepFocus;
+
+                container.querySelectorAll('.drawflow-node.selected').forEach((node) => {
+                    if (keepNode && node === keepNode) return;
+                    node.classList.remove('selected');
+                });
+                container.querySelectorAll('.connection.selected').forEach((conn) => {
+                    conn.classList.remove('selected');
+                });
+                container.querySelectorAll('.node-text-color-palette.open').forEach((el) => {
+                    if (keepNode && keepNode.contains(el)) return;
+                    el.classList.remove('open');
+                });
+
+                if (!keepFocus) {
+                    const activeEl = document.activeElement;
+                    if (activeEl && activeEl !== document.body) {
+                        const isWorkflowInput = activeEl.closest && activeEl.closest('#drawflow-container');
+                        if (isWorkflowInput && typeof activeEl.blur === 'function') {
+                            activeEl.blur();
+                        }
+                    }
+                }
+            };
+
+            const selectNodeElement = (nodeEl) => {
+                if (!nodeEl) return;
+                clearNodeSelection({ keepNode: nodeEl, keepFocus: true });
+                nodeEl.classList.add('selected');
+            };
+
+            container.addEventListener('mousedown', (e) => {
+                const targetEl = (e.target && typeof e.target.closest === 'function') ? e.target : null;
+                const textInteractive = targetEl ? targetEl.closest('.node-input-text, .node-text-toolbar, .node-text-color-palette, .node-heading-select, .node-text-color-btn') : null;
+                if (textInteractive && !isSpacePanning) {
+                    const nodeEl = targetEl.closest('.drawflow-node');
+                    selectNodeElement(nodeEl);
+                    return;
+                }
+
+                const resizeHandle = targetEl ? targetEl.closest('.node-resize-handle') : null;
+                if (resizeHandle && !isSpacePanning) {
+                    const nodeEl = resizeHandle.closest('.drawflow-node');
+                    if (!nodeEl) return;
+                    selectNodeElement(nodeEl);
+                    activeResize = {
+                        nodeEl,
+                        startX: e.clientX,
+                        startY: e.clientY,
+                        startW: nodeEl.offsetWidth,
+                        startH: nodeEl.offsetHeight
+                    };
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
+
+                const hasClass = (cls) => !!(targetEl && targetEl.classList && targetEl.classList.contains(cls));
+                const isBackground = e.target === container || hasClass('drawflow') || hasClass('parent-drawflow') || e.target === window.editor.precanvas;
+                if (isBackground && !isSpacePanning) {
+                    clearNodeSelection();
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
+
+                if (isBackground && isSpacePanning && drawflowContainer) {
+                    drawflowContainer.classList.add('space-pan-dragging');
+                }
+            }, true);
+
+            window.addEventListener('mousemove', (e) => {
+                if (!activeResize) return;
+                const dx = e.clientX - activeResize.startX;
+                const dy = e.clientY - activeResize.startY;
+                applyNodeSize(activeResize.nodeEl, activeResize.startW + dx, activeResize.startH + dy);
             });
-            // Run Workflow button logic
-            document.getElementById('runWorkflowBtn').addEventListener('click', async () => {
+
+            window.addEventListener('mouseup', () => {
+                if (activeResize) {
+                    scheduleWorkflowAutosave();
+                }
+                activeResize = null;
+            });
+
+            container.addEventListener('click', (e) => {
+                if (isSpacePanning) return;
+                const clickedNode = e.target.closest('.drawflow-node');
+                if (clickedNode) return;
+                const isUI = e.target.closest('#workflowContextMenu, #nodeAddOverlay, #workflowTextPreviewModal');
+                if (isUI) return;
+                clearNodeSelection();
+            }, true);
+
+            if (drawflowContainer) {
+                drawflowContainer.addEventListener('click', (e) => {
+                    if (!contextMenu || contextMenu.classList.contains('hidden')) return;
+                    if (!contextMenu.contains(e.target)) hideContextMenu();
+                });
+            }
+
+            if (contextSearch) {
+                contextSearch.addEventListener('input', (e) => {
+                    const q = (e.target.value || '').trim().toLowerCase();
+                    contextMenu.querySelectorAll('.workflow-menu-item').forEach((item) => {
+                        const label = (item.dataset.label || '').toLowerCase();
+                        item.classList.toggle('hidden', q && !label.includes(q));
+                    });
+                });
+                contextSearch.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') hideContextMenu();
+                });
+            }
+
+            if (contextMenu) {
+                contextMenu.addEventListener('click', (e) => {
+                    const item = e.target.closest('.workflow-menu-item');
+                    if (!item) return;
+
+                    const action = item.dataset.action;
+                    if (action === 'text_input') addTextInputNode(spawnX, spawnY);
+                    else if (action === 'image_input') addImageInputNode(spawnX, spawnY);
+                    else if (action === 'video_input') addVideoInputNode(spawnX, spawnY);
+                    else if (action === 'generator_image') addGeneratorNode(spawnX + 250, spawnY, { outputType: 'image' });
+                    else if (action === 'generator_video') addGeneratorNode(spawnX + 250, spawnY, { outputType: 'video' });
+                    else if (action === 'assistant') addGeneratorNode(spawnX + 250, spawnY, {
+                        outputType: 'prompt',
+                        agentPrompt: 'You are a prompt assistant. Improve and structure the prompt for image generation.'
+                    });
+                    else if (action === 'generator_upscaler') addGeneratorNode(spawnX + 250, spawnY, {
+                        outputType: 'image',
+                        agentPrompt: 'Upscale and enhance the input image while preserving composition and identity.'
+                    });
+                    else if (action === 'output_result') addOutputNode(spawnX + 500, spawnY);
+                });
+            }
+            const collectDependencyNodeIds = (nodes, targetNodeId) => {
+                const needed = new Set();
+                const visit = (id) => {
+                    const strId = String(id);
+                    if (needed.has(strId)) return;
+                    needed.add(strId);
+                    const node = nodes[strId];
+                    if (!node || !node.inputs) return;
+                    Object.values(node.inputs).forEach((inputPort) => {
+                        const conns = Array.isArray(inputPort?.connections) ? inputPort.connections : [];
+                        conns.forEach((conn) => {
+                            if (conn && conn.node !== undefined && conn.node !== null) {
+                                visit(conn.node);
+                            }
+                        });
+                    });
+                };
+                visit(targetNodeId);
+                return needed;
+            };
+
+            const runWorkflowPipeline = async (targetNodeId = null) => {
+                await saveActiveWorkflow(workflowStore, false);
                 const exportData = window.editor.export();
                 const nodes = exportData.drawflow.Home.data;
                 const nodeKeys = Object.keys(nodes);
 
                 if (nodeKeys.length === 0) return alert("Canvas is empty. Add some nodes first.");
 
+                const executionScope = targetNodeId ? collectDependencyNodeIds(nodes, targetNodeId) : new Set(nodeKeys);
+                if (targetNodeId && !executionScope.has(String(targetNodeId))) {
+                    executionScope.add(String(targetNodeId));
+                }
+
                 const getNodeDOM = (id) => document.getElementById('node-' + id);
                 const nodeResults = {}; // Stores base64 images generated by each node
-                let pending = new Set(nodeKeys);
+                let pending = new Set(Array.from(executionScope));
                 let iterationCount = 0;
 
                 const runBtn = document.getElementById('runWorkflowBtn');
                 const originalText = runBtn.innerHTML;
-                runBtn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Running...';
+                runBtn.innerHTML = targetNodeId ? '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Running Node...' : '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Running...';
                 runBtn.disabled = true;
 
                 try {
@@ -640,20 +1997,21 @@ document.addEventListener('DOMContentLoaded', () => {
                         let executedInThisPass = false;
 
                         for (let id of Array.from(pending)) {
-                            const node = nodes[id];
+                                const node = nodes[id];
                             let canRun = true;
                             let referenceImages = [];
 
                             // Dependency Resolution
-                            for (let inputKey in node.inputs) {
-                                const inputConns = node.inputs[inputKey].connections;
-                                for (let conn of inputConns) {
-                                    const sourceNodeId = conn.node;
-                                    if (!nodeResults[sourceNodeId]) {
-                                        canRun = false;
-                                        break;
-                                    } else {
-                                        referenceImages.push(nodeResults[sourceNodeId]);
+                                for (let inputKey in node.inputs) {
+                                    const inputConns = node.inputs[inputKey].connections;
+                                    for (let conn of inputConns) {
+                                        const sourceNodeId = String(conn.node);
+                                        if (!executionScope.has(sourceNodeId)) continue;
+                                        if (!nodeResults[sourceNodeId]) {
+                                            canRun = false;
+                                            break;
+                                        } else {
+                                            referenceImages.push(nodeResults[sourceNodeId]);
                                     }
                                 }
                                 if (!canRun) break;
@@ -668,6 +2026,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 if (resultContainer) {
                                     resultContainer.innerHTML = '<div class="text-xs text-yellow-500 animate-pulse text-center py-4 bg-zinc-800/50 rounded drop-shadow-sm border border-yellow-500/20">Processing...</div>';
                                     resultContainer.classList.remove('hidden');
+                                    setGeneratorView(dom, 'result');
                                 }
 
                                 let resultUrl = null;
@@ -691,10 +2050,15 @@ document.addEventListener('DOMContentLoaded', () => {
                                 }
                                 // 2) Handle Generators (Unified + backward compatible old node names)
                                 else if (node.name === 'generator' || node.name === 'prompt_gen' || node.name === 'image_gen' || node.name === 'video_gen' || node.name === 'base_gen' || node.name === 'modifier') {
-                                    const promptEl = dom.querySelector('.node-input-prompt') || { value: '' };
+                                    const promptEl = dom.querySelector('.node-input-prompt') || dom.querySelector('.node-gen-prompt') || { value: '' };
                                     const agentPromptEl = dom.querySelector('.node-agent-prompt') || { value: '' };
                                     const modelSelect = dom.querySelector('.node-input-model');
                                     const outputTypeEl = dom.querySelector('.node-output-type');
+                                    const countEl = dom.querySelector('.node-gen-count');
+                                    const styleEl = dom.querySelector('.node-gen-style');
+                                    const ratioEl = dom.querySelector('.node-gen-ratio');
+                                    const resolutionEl = dom.querySelector('.node-gen-resolution');
+                                    const localRefPreview = dom.querySelector('.node-generator-reference-preview');
 
                                     // Legacy node compatibility: infer output type from old node names.
                                     let outputType = outputTypeEl ? outputTypeEl.value : 'image';
@@ -707,9 +2071,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
                                     const refTexts = referenceImages.filter(v => typeof v === 'string' && !v.startsWith('data:image'));
                                     const refImgs = referenceImages.filter(v => typeof v === 'string' && v.startsWith('data:image'));
+                                    if (localRefPreview && localRefPreview.src && localRefPreview.src !== window.location.href) {
+                                        refImgs.push(localRefPreview.src);
+                                    }
 
-                                    // Agent + Text + upstream text를 합성한 최종 프롬프트
+                                    // Agent + Text + upstream text瑜??⑹꽦??理쒖쥌 ?꾨＼?꾪듃
                                     const combinedPrompt = [agentPrompt, localPrompt, refTexts.join('\n')].filter(Boolean).join('\n\n');
+                                    const imageCount = Math.max(1, Math.min(8, Number(countEl ? countEl.value : 1) || 1));
+                                    const style = styleEl ? styleEl.value : 'auto';
+                                    const aspectRatio = ratioEl ? ratioEl.value : '16:9';
+                                    const resolution = resolutionEl ? resolutionEl.value : '1K';
 
                                     if (!combinedPrompt && (outputType === 'image' || outputType === 'prompt')) {
                                         throw new Error("Generator requires text input (Agent Prompt, Text Prompt, or upstream text).");
@@ -720,7 +2091,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                             subject: combinedPrompt,
                                             presets: refTexts,
                                             referenceImages: refImgs,
-                                            config: {},
+                                            config: {
+                                                modelId: modelSelect ? modelSelect.value : 'gemini-2.5-flash',
+                                                aspectRatio,
+                                                resolution
+                                            },
                                             media_type: 'image'
                                         };
                                         const res = await fetch('/api/prompt/midjourney', {
@@ -734,33 +2109,90 @@ document.addEventListener('DOMContentLoaded', () => {
                                             nodeResults[id] = resultUrl;
                                             if (resultContainer) {
                                                 resultContainer.innerHTML = `<div class="p-2 bg-black/50 text-[10px] text-zinc-300 break-all leading-tight">${data.prompt}</div>`;
+                                                setGeneratorView(dom, 'result');
                                             }
                                         } else {
                                             throw new Error(data.error || 'Prompt generation failed');
                                         }
                                     } else if (outputType === 'image') {
-                                        const reqBody = {
-                                            prompt: combinedPrompt,
-                                            config: { modelId: modelSelect ? modelSelect.value : 'gemini-3-pro-image-preview' }
-                                        };
-                                        if (refImgs.length > 0) reqBody.referenceImages = refImgs;
+                                        const urls = [];
+                                        for (let i = 0; i < imageCount; i++) {
+                                            const reqBody = {
+                                                prompt: combinedPrompt,
+                                                config: {
+                                                    modelId: modelSelect ? modelSelect.value : 'gemini-3-pro-image-preview',
+                                                    style,
+                                                    aspectRatio,
+                                                    resolution
+                                                }
+                                            };
+                                            if (refImgs.length > 0) reqBody.referenceImages = refImgs;
 
-                                        const res = await fetch('/api/generate', {
+                                            const res = await fetch('/api/generate', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify(reqBody)
+                                            });
+                                            const data = await res.json();
+                                            if (!res.ok) {
+                                                throw new Error(data.error || `Image generation failed (${res.status})`);
+                                            }
+                                            if (data.error) {
+                                                throw new Error(data.error);
+                                            }
+                                            const imageUrl = data.url || (data.saved_image && data.saved_image.url);
+                                            if (!imageUrl) {
+                                                throw new Error('Image generation response missing image url');
+                                            }
+                                            urls.push(imageUrl);
+                                        }
+                                        if (urls.length > 0) {
+                                            resultUrl = urls[0];
+                                            nodeResults[id] = resultUrl;
+                                            if (resultContainer) {
+                                                if (urls.length === 1) {
+                                                    resultContainer.innerHTML = `<img src="${urls[0]}" class="w-full h-auto object-cover border border-zinc-700/50 rounded cursor-pointer hover:opacity-90 transition-opacity" onclick="window.openImageModal(this.src, '')">`;
+                                                } else {
+                                                    const items = urls.map((url) => `<img src="${url}" class="w-full h-24 object-cover border border-zinc-700/40 rounded cursor-pointer" onclick="window.openImageModal(this.src, '')">`).join('');
+                                                    resultContainer.innerHTML = `<div class="grid grid-cols-2 gap-2 p-2 bg-black/30 rounded">${items}</div>`;
+                                                }
+                                                resultContainer.classList.remove('hidden');
+                                                setGeneratorView(dom, 'result');
+                                            }
+                                        } else {
+                                            throw new Error('Image generation failed');
+                                        }
+                                    } else if (outputType === 'video') {
+                                        const reqBody = {
+                                            subject: combinedPrompt,
+                                            presets: refTexts,
+                                            referenceImages: refImgs,
+                                            config: {
+                                                modelId: modelSelect ? modelSelect.value : 'gemini-2.5-flash',
+                                                aspectRatio,
+                                                resolution
+                                            },
+                                            media_type: 'video'
+                                        };
+                                        const res = await fetch('/api/prompt/midjourney', {
                                             method: 'POST',
                                             headers: { 'Content-Type': 'application/json' },
                                             body: JSON.stringify(reqBody)
                                         });
                                         const data = await res.json();
-                                        if (data.url) {
-                                            resultUrl = data.url;
-                                            nodeResults[id] = resultUrl;
-                                        } else {
-                                            throw new Error(data.error || 'Image generation failed');
+                                        if (!res.ok) {
+                                            throw new Error(data.error || `Video prompt generation failed (${res.status})`);
                                         }
-                                    } else if (outputType === 'video') {
-                                        // Video backend is not available yet. Keep it explicit but usable in pipeline.
-                                        resultUrl = `[VIDEO_SIMULATION]\n${combinedPrompt || 'No prompt provided.'}`;
+                                        if (!data.prompt) {
+                                            throw new Error(data.error || 'Video prompt generation failed');
+                                        }
+                                        resultUrl = `[VIDEO_PROMPT]\n${data.prompt}`;
                                         nodeResults[id] = resultUrl;
+                                        if (resultContainer) {
+                                            resultContainer.innerHTML = `<div class="p-2 bg-black/50 text-[10px] text-zinc-300 break-all leading-tight">${String(resultUrl)}</div>`;
+                                            resultContainer.classList.remove('hidden');
+                                            setGeneratorView(dom, 'result');
+                                        }
                                     } else {
                                         throw new Error(`Unsupported generator output type: ${outputType}`);
                                     }
@@ -805,6 +2237,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
                                 pending.delete(id);
                                 executedInThisPass = true;
+                                if (targetNodeId && String(id) === String(targetNodeId)) {
+                                    pending.clear();
+                                    break;
+                                }
                             }
                         }
 
@@ -813,6 +2249,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         iterationCount++;
                     }
+                    await saveActiveWorkflow(workflowStore, false);
                 } catch (err) {
                     console.error("Workflow execution error:", err);
                     alert("Error Pipeline Execution: " + err.message);
@@ -821,11 +2258,41 @@ document.addEventListener('DOMContentLoaded', () => {
                     runBtn.disabled = false;
                     safeCreateIcons();
                 }
+            };
+
+            // Run Workflow button logic
+            document.getElementById('runWorkflowBtn').addEventListener('click', async () => {
+                await runWorkflowPipeline(null);
             });
+
+            const applyHeadingFromSelect = (selectEl) => {
+                if (!selectEl || !selectEl.classList.contains('node-heading-select')) return false;
+                const nodeEl = selectEl.closest('.drawflow-node');
+                const textEl = nodeEl ? nodeEl.querySelector('.node-input-text') : null;
+                const styleState = textEl ? getTextStyleState(textEl) : null;
+                if (textEl && styleState) {
+                    styleState.heading = selectEl.value || 'h3';
+                    applyTextVisualStyle(textEl, styleState);
+                }
+                return true;
+            };
 
             // Handle file upload events via delegation for dynamic Input Nodes
             document.getElementById('drawflow').addEventListener('change', (e) => {
                 const target = e.target;
+                if (applyHeadingFromSelect(target)) return;
+
+                if (target.classList.contains('node-output-type')) {
+                    const nodeEl = target.closest('.drawflow-node');
+                    syncGeneratorModelOptions(nodeEl);
+                    scheduleWorkflowAutosave();
+                    return;
+                }
+                if (target.classList.contains('node-input-model') || target.classList.contains('node-gen-style') || target.classList.contains('node-gen-ratio') || target.classList.contains('node-gen-resolution') || target.classList.contains('node-gen-count')) {
+                    scheduleWorkflowAutosave();
+                    return;
+                }
+
                 if (target.classList.contains('node-file-input')) {
                     const file = target.files[0];
                     if (!file) return;
@@ -852,12 +2319,172 @@ document.addEventListener('DOMContentLoaded', () => {
                                 if (removeBtn) removeBtn.classList.remove('hidden');
                             }
                         }
+                        scheduleWorkflowAutosave();
                     };
                     reader.readAsDataURL(file);
                 }
             });
 
+            document.getElementById('drawflow').addEventListener('input', (e) => {
+                const target = e.target;
+                applyHeadingFromSelect(target);
+                if (target.closest('.drawflow-node')) {
+                    scheduleWorkflowAutosave();
+                }
+            });
+
             document.getElementById('drawflow').addEventListener('click', (e) => {
+                const viewBtn = e.target.closest('.node-view-toggle-btn');
+                if (viewBtn) {
+                    e.stopPropagation();
+                    const nodeEl = viewBtn.closest('.drawflow-node');
+                    setGeneratorView(nodeEl, viewBtn.dataset.view || 'prompt');
+                    scheduleWorkflowAutosave();
+                    return;
+                }
+
+                const nodeRunBtn = e.target.closest('.node-run-btn');
+                if (nodeRunBtn) {
+                    e.stopPropagation();
+                    const nodeEl = nodeRunBtn.closest('.drawflow-node');
+                    const nodeId = nodeEl && nodeEl.id ? nodeEl.id.replace('node-', '') : null;
+                    if (nodeId) {
+                        runWorkflowPipeline(nodeId).catch((err) => {
+                            console.error('Node run failed:', err);
+                            alert('Node run failed: ' + (err?.message || 'Unknown error'));
+                        });
+                    }
+                    return;
+                }
+
+                const actionBtn = e.target.closest('[data-text-action]');
+                if (actionBtn) {
+                    e.stopPropagation();
+                    const action = actionBtn.dataset.textAction;
+                    const nodeEl = actionBtn.closest('.drawflow-node');
+                    const textEl = nodeEl ? nodeEl.querySelector('.node-input-text') : null;
+                    const paletteEl = nodeEl ? nodeEl.querySelector('.node-text-color-palette') : null;
+
+                    if (action === 'run_workflow') {
+                        document.getElementById('runWorkflowBtn')?.click();
+                        return;
+                    }
+                    if (action === 'open_preview') {
+                        openTextPreviewModal(textEl);
+                        return;
+                    }
+                    if (action === 'toggle_color_palette') {
+                        const nodeEl = actionBtn.closest('.drawflow-node');
+                        if (nodeEl) selectNodeElement(nodeEl);
+                        closeAllTextPalettes();
+                        if (paletteEl) {
+                            paletteEl.classList.toggle('open');
+                        }
+                        return;
+                    }
+                    if (action === 'bold') {
+                        if (!textEl) return;
+                        const styleState = getTextStyleState(textEl);
+                        styleState.bold = !styleState.bold;
+                        applyTextVisualStyle(textEl, styleState);
+                        scheduleWorkflowAutosave();
+                        return;
+                    }
+                    if (action === 'italic') {
+                        if (!textEl) return;
+                        const styleState = getTextStyleState(textEl);
+                        styleState.italic = !styleState.italic;
+                        applyTextVisualStyle(textEl, styleState);
+                        scheduleWorkflowAutosave();
+                        return;
+                    }
+                    if (action === 'underline') {
+                        if (!textEl) return;
+                        const styleState = getTextStyleState(textEl);
+                        styleState.underline = !styleState.underline;
+                        applyTextVisualStyle(textEl, styleState);
+                        scheduleWorkflowAutosave();
+                        return;
+                    }
+                    if (action === 'bullet_list') {
+                        applyListFormatting(textEl, 'bullet');
+                        scheduleWorkflowAutosave();
+                        return;
+                    }
+                    if (action === 'numbered_list') {
+                        applyListFormatting(textEl, 'number');
+                        scheduleWorkflowAutosave();
+                        return;
+                    }
+                }
+
+                // Text node background color picker
+                const colorBtn = e.target.closest('.node-text-color-btn');
+                if (colorBtn) {
+                    e.stopPropagation();
+                    const nodeEl = colorBtn.closest('.drawflow-node');
+                    const textEl = nodeEl ? nodeEl.querySelector('.node-input-text') : null;
+                    if (textEl) {
+                        const selected = colorBtn.dataset.color || '#18181b';
+                        textEl.style.background = selected;
+                    }
+                    closeAllTextPalettes();
+                    scheduleWorkflowAutosave();
+                    return;
+                }
+
+                const refRemoveBtn = e.target.closest('.node-generator-reference-remove');
+                if (refRemoveBtn) {
+                    e.stopPropagation();
+                    const nodeEl = refRemoveBtn.closest('.drawflow-node');
+                    const preview = nodeEl ? nodeEl.querySelector('.node-generator-reference-preview') : null;
+                    if (preview) {
+                        preview.src = '';
+                        preview.classList.add('hidden');
+                    }
+                    refRemoveBtn.classList.add('hidden');
+                    scheduleWorkflowAutosave();
+                    return;
+                }
+
+                const optionsToggleBtn = e.target.closest('.node-generator-options-toggle');
+                if (optionsToggleBtn) {
+                    e.stopPropagation();
+                    const nodeEl = optionsToggleBtn.closest('.drawflow-node');
+                    const panel = nodeEl ? nodeEl.querySelector('.node-generator-options-panel') : null;
+                    if (panel) panel.classList.toggle('hidden');
+                    return;
+                }
+
+                const openLibraryBtn = e.target.closest('.node-open-library-btn');
+                if (openLibraryBtn) {
+                    e.stopPropagation();
+                    const nodeEl = openLibraryBtn.closest('.drawflow-node');
+                    const nodeId = nodeEl && nodeEl.id ? nodeEl.id.replace('node-', '') : null;
+                    if (nodeId) {
+                        openSourceModal('workflowNodeImage', nodeId);
+                    }
+                    return;
+                }
+
+                const decBtn = e.target.closest('.node-gen-count-dec');
+                const incBtn = e.target.closest('.node-gen-count-inc');
+                if (decBtn || incBtn) {
+                    e.stopPropagation();
+                    const nodeEl = (decBtn || incBtn).closest('.drawflow-node');
+                    const input = nodeEl ? nodeEl.querySelector('.node-gen-count') : null;
+                    if (input) {
+                        const now = Math.max(1, Math.min(8, Number(input.value || 1)));
+                        input.value = String(Math.max(1, Math.min(8, now + (incBtn ? 1 : -1))));
+                    }
+                    scheduleWorkflowAutosave();
+                    return;
+                }
+
+                if (!e.target.closest('.node-text-color-palette')) {
+                    closeAllTextPalettes();
+                }
+
                 // Click to trigger input
                 const uploadArea = e.target.closest('.node-image-upload-area, .node-video-upload-area');
                 if (uploadArea && e.target.tagName !== 'BUTTON' && !e.target.closest('button')) {
@@ -886,6 +2513,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     removeBtn.classList.add('hidden');
                     const input = box.querySelector('.node-file-input');
                     if (input) input.value = ''; // Reset input
+                    scheduleWorkflowAutosave();
                 }
             });
 
@@ -1508,13 +3136,24 @@ document.addEventListener('DOMContentLoaded', () => {
             safeCreateIcons();
         };
 
-        window.downloadImage = (url) => {
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `nanogen-${Date.now()}.png`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+        window.downloadImage = async (url) => {
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error(`Download failed (${res.status})`);
+                const blob = await res.blob();
+                const objectUrl = URL.createObjectURL(blob);
+                const ext = (blob.type && blob.type.includes('/')) ? blob.type.split('/')[1] : 'png';
+                const link = document.createElement('a');
+                link.href = objectUrl;
+                link.download = `nanogen-${Date.now()}.${ext}`;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(objectUrl);
+            } catch (e) {
+                console.error('Download error:', e);
+                alert('Failed to download image.');
+            }
         };
 
         window.deleteImage = async (id) => {
@@ -1572,6 +3211,9 @@ document.addEventListener('DOMContentLoaded', () => {
                              </div>
                              <img src="${img.url}" onload="document.getElementById('src-skeleton-${img.id}')?.remove(); this.classList.remove('opacity-0')" class="w-full h-auto object-cover opacity-0 transition-opacity duration-500">
                              <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center gap-2">
+                                  <button onclick="window.downloadImage('${img.url}')" class="p-2.5 bg-zinc-800/90 hover:bg-zinc-700 rounded-full text-white backdrop-blur-sm transition-colors transform hover:scale-110">
+                                     <i data-lucide="download" class="w-5 h-5"></i>
+                                  </button>
                                   <button onclick="window.deleteSourceImage(${img.id})" class="p-2.5 bg-red-900/80 hover:bg-red-800 rounded-full text-white backdrop-blur-sm transition-colors transform hover:scale-110">
                                      <i data-lucide="trash-2" class="w-5 h-5"></i>
                                   </button>
@@ -1654,6 +3296,18 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- Modal Logic ---
         let activeUploadTarget = null; // { key: 'identitySwap', subKey: 'face' } etc
 
+        const applyImageToWorkflowNode = (nodeId, imageDataUrl) => {
+            const nodeEl = document.getElementById(`node-${nodeId}`);
+            if (!nodeEl) return false;
+            const imgEl = nodeEl.querySelector('.node-image-preview');
+            const removeBtn = nodeEl.querySelector('.node-image-remove');
+            if (!imgEl) return false;
+            imgEl.src = imageDataUrl;
+            imgEl.classList.remove('hidden');
+            if (removeBtn) removeBtn.classList.remove('hidden');
+            return true;
+        };
+
         window.openSourceModal = (targetKey, targetSubKey = null) => {
             activeUploadTarget = { key: targetKey, subKey: targetSubKey };
             const modal = document.getElementById('sourceSelectModal');
@@ -1689,6 +3343,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // We need to map activeUploadTarget to the DOM input ID
             let inputId = null;
             if (activeUploadTarget.key === 'referenceImage') inputId = 'referenceInput';
+            else if (activeUploadTarget.key === 'workflowNodeImage') {
+                const nodeEl = document.getElementById(`node-${activeUploadTarget.subKey}`);
+                const nodeInput = nodeEl ? nodeEl.querySelector('.node-file-input') : null;
+                if (nodeInput) nodeInput.click();
+                activeUploadTarget = null;
+                return;
+            }
             else if (activeUploadTarget.key === 'composition') {
                 inputId = activeUploadTarget.subKey === 'model' ? 'comp-model-upload' : 'comp-garment-upload';
             } else if (activeUploadTarget.key === 'identitySwap') {
@@ -1720,6 +3381,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 .then(r => r.blob())
                 .then(b => fileToBase64(b))
                 .then(b64 => {
+                    if (activeUploadTarget && activeUploadTarget.key === 'workflowNodeImage') {
+                        const applied = applyImageToWorkflowNode(activeUploadTarget.subKey, b64);
+                        document.getElementById('sourceSelectModal').classList.add('hidden');
+                        activeUploadTarget = null;
+                        if (applied) scheduleWorkflowAutosave();
+                        if (!applied) {
+                            alert('Could not apply selected image to node.');
+                        }
+                        return;
+                    }
+
                     // Set state
                     if (activeUploadTarget.subKey) {
                         state[activeUploadTarget.key][activeUploadTarget.subKey] = b64;
@@ -1875,30 +3547,46 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const genSettings = document.getElementById('generationSettings');
             const pgSettings = document.getElementById('promptGenSettings');
+            const workflowSettings = document.getElementById('workflowSettings');
             const genMediaSec = document.getElementById('generationMediaSection');
             const brushToolsSec = document.getElementById('brushToolsSection');
+            const commonSidebarSettings = document.getElementById('commonSidebarSettings');
             const presetModeLabel = document.getElementById('presetModeLabel');
 
             if (state.mode === 'prompt_gen') {
                 if (genSettings) genSettings.classList.add('hidden');
+                if (workflowSettings) workflowSettings.classList.add('hidden');
                 if (genMediaSec) genMediaSec.classList.add('hidden');
                 if (brushToolsSec) brushToolsSec.classList.add('hidden');
+                if (commonSidebarSettings) commonSidebarSettings.classList.remove('hidden');
                 if (pgSettings) pgSettings.classList.remove('hidden');
                 if (presetModeLabel) { presetModeLabel.classList.remove('hidden'); presetModeLabel.textContent = 'Prompt Gen'; }
                 els.generateBtn.innerHTML = '<span class="hidden md:inline">Prompt Generate</span><i data-lucide="wand-2" class="w-5 h-5"></i>';
                 els.generateBtn.classList.add('bg-yellow-500', 'text-black');
                 els.generateBtn.classList.remove('bg-zinc-800', 'text-white');
+            } else if (state.mode === 'workflow') {
+                if (genSettings) genSettings.classList.add('hidden');
+                if (pgSettings) pgSettings.classList.add('hidden');
+                if (workflowSettings) workflowSettings.classList.remove('hidden');
+                if (genMediaSec) genMediaSec.classList.add('hidden');
+                if (brushToolsSec) brushToolsSec.classList.add('hidden');
+                if (commonSidebarSettings) commonSidebarSettings.classList.add('hidden');
+                if (presetModeLabel) presetModeLabel.classList.add('hidden');
             } else if (state.mode === 'library' || state.mode === 'source_library' || state.mode === 'workflow_studio') {
                 if (genSettings) genSettings.classList.add('hidden');
                 if (pgSettings) pgSettings.classList.add('hidden');
+                if (workflowSettings) workflowSettings.classList.add('hidden');
                 if (genMediaSec) genMediaSec.classList.add('hidden');
                 if (brushToolsSec) brushToolsSec.classList.add('hidden');
+                if (commonSidebarSettings) commonSidebarSettings.classList.add('hidden');
                 if (presetModeLabel) presetModeLabel.classList.add('hidden');
             } else {
                 // Generation modes
                 if (genSettings) genSettings.classList.remove('hidden');
+                if (workflowSettings) workflowSettings.classList.add('hidden');
                 if (genMediaSec) genMediaSec.classList.remove('hidden');
                 if (brushToolsSec) brushToolsSec.classList.remove('hidden');
+                if (commonSidebarSettings) commonSidebarSettings.classList.remove('hidden');
                 if (pgSettings) pgSettings.classList.add('hidden');
                 if (presetModeLabel) { presetModeLabel.classList.remove('hidden'); presetModeLabel.textContent = 'Gen'; }
                 els.generateBtn.innerHTML = '<span class="hidden md:inline">Generate</span><i data-lucide="sparkles" class="w-5 h-5"></i>';
@@ -2296,3 +3984,5 @@ document.addEventListener('DOMContentLoaded', () => {
         // Simulate click on 1:1 aspect ratio to set initial state UI
         document.querySelector('[data-ratio="1:1"]').click();
     });
+
+

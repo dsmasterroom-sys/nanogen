@@ -8,7 +8,7 @@ from django.core.files.base import ContentFile
 from django.templatetags.static import static
 from django.shortcuts import redirect
 from .services import generate_image_with_gemini
-from .models import GeneratedImage, SourceImage, MidjourneyOption
+from .models import GeneratedImage, SourceImage, MidjourneyOption, WorkflowStore
 
 
 def index(request):
@@ -20,6 +20,54 @@ def favicon_view(request):
         return redirect(static('nanogen/favicon.ico'))
     except:
         return JsonResponse({'status': 'ok'})
+
+
+def _empty_workflow_store():
+    return {'workflows': [], 'activeId': None}
+
+
+def _normalize_workflow_store(store):
+    if not isinstance(store, dict):
+        return _empty_workflow_store()
+    workflows = store.get('workflows')
+    if not isinstance(workflows, list):
+        workflows = []
+    active_id = store.get('activeId', None)
+    normalized = {
+        'workflows': workflows,
+        'activeId': active_id
+    }
+    if 'updatedAt' in store:
+        normalized['updatedAt'] = store.get('updatedAt')
+    return normalized
+
+
+@csrf_exempt
+def workflow_store_view(request):
+    if request.method == 'GET':
+        try:
+            obj = WorkflowStore.objects.filter(key='default').first()
+            store = _normalize_workflow_store(obj.data if obj else _empty_workflow_store())
+            return JsonResponse({'store': store})
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=500)
+    if request.method == 'POST':
+        try:
+            body = json.loads(request.body or '{}')
+            store = body.get('store')
+            if not isinstance(store, dict):
+                return JsonResponse({'error': 'Invalid store payload'}, status=400)
+            if not isinstance(store.get('workflows'), list):
+                return JsonResponse({'error': 'Invalid workflows payload'}, status=400)
+            normalized = _normalize_workflow_store(store)
+            WorkflowStore.objects.update_or_create(
+                key='default',
+                defaults={'data': normalized}
+            )
+            return JsonResponse({'success': True, 'savedWorkflows': len(normalized.get('workflows', []))})
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=500)
+    return JsonResponse({'error': 'Method not allowed'}, status=405)
 
 # --- Midjourney Prompt Gen Data ---
 
@@ -298,11 +346,11 @@ def generate_midjourney_prompt_view(request):
 def generate_image_view(request):
     if request.method == 'POST':
         try:
-            data = json.loads(request.body)
-            prompt = data.get('prompt')
-            config = data.get('config', {})
-            reference_images = data.get('referenceImages', [])
-            mask_image = data.get('maskImage', None)
+            req_data = json.loads(request.body)
+            prompt = req_data.get('prompt')
+            config = req_data.get('config', {})
+            reference_images = req_data.get('referenceImages', [])
+            mask_image = req_data.get('maskImage', None)
             
             if not prompt:
                 return JsonResponse({'error': 'Prompt is required'}, status=400)
@@ -310,26 +358,35 @@ def generate_image_view(request):
             # Generate image (returns base64 data URI)
             image_b64_uri = generate_image_with_gemini(prompt, config, reference_images, mask_image)
             
-            # Save to Database
+            # Save to Database (GeneratedImage + SourceImage)
             try:
-                # Extract base64 functionality
                 if 'base64,' in image_b64_uri:
                     format_str, imgstr = image_b64_uri.split(';base64,') 
                     ext = format_str.split('/')[-1]
-                    filename = f"generated_{uuid.uuid4()}.{ext}"
-                    data = ContentFile(base64.b64decode(imgstr), name=filename)
-                    
+                    image_bytes = base64.b64decode(imgstr)
+
+                    generated_filename = f"generated_{uuid.uuid4()}.{ext}"
+                    source_filename = f"source_from_generated_{uuid.uuid4()}.{ext}"
+
                     generated_image = GeneratedImage.objects.create(
-                        image=data,
+                        image=ContentFile(image_bytes, name=generated_filename),
                         prompt=prompt
                     )
+
+                    source_image = SourceImage.objects.create(
+                        image=ContentFile(image_bytes, name=source_filename)
+                    )
                     
-                    # Return both the inline URL (for immediate display) and the saved ID/URL
+                    # Return inline URL for immediate display + saved records for libraries/downloads
                     return JsonResponse({
                         'url': image_b64_uri,
                         'saved_image': {
                             'id': generated_image.id,
                             'url': generated_image.image.url
+                        },
+                        'saved_source': {
+                            'id': source_image.id,
+                            'url': source_image.image.url
                         }
                     })
             except Exception as save_error:
