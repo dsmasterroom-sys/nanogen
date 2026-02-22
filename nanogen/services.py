@@ -1,6 +1,8 @@
 import os
 import io
 import base64
+import time
+import tempfile
 from google import genai
 from google.genai import types
 from google.genai import errors
@@ -213,6 +215,111 @@ def generate_image_with_gemini(prompt, config, reference_images=None, mask_image
     except Exception as api_error:
         print(f"GOOGLE API CALL FAILED: {api_error}")
         raise api_error
+
+
+def generate_video_with_veo(prompt, config, reference_images=None):
+    """
+    Generates a video using Veo models and returns (video_bytes, mime_type, used_model_id).
+    """
+    client = get_ai_client()
+    reference_images = reference_images or []
+
+    requested_model_id = config.get('modelId') if isinstance(config, dict) else None
+    env_model_id = os.environ.get('VIDEO_MODEL_ID', 'veo-3.1-generate-preview')
+    model_id = requested_model_id or env_model_id
+
+    # Allowlist to avoid accidentally routing video generation to text/prompt models.
+    allowed_models = {
+        'veo-3.1-generate-preview',
+        'veo-3.1-fast-generate-preview',
+    }
+    if model_id not in allowed_models:
+        model_id = 'veo-3.1-fast-generate-preview'
+
+    if not prompt or not isinstance(prompt, str):
+        raise ValueError("Prompt is required for video generation.")
+
+    source_kwargs = {'prompt': prompt}
+    if reference_images:
+        img_bytes, img_mime = process_reference_image(reference_images[0])
+        if img_bytes:
+            source_kwargs['image'] = types.Image(imageBytes=img_bytes, mimeType=img_mime or 'image/jpeg')
+
+    source = types.GenerateVideosSource(**source_kwargs)
+
+    aspect_ratio = config.get('aspectRatio') if isinstance(config, dict) else None
+    if aspect_ratio not in ('16:9', '9:16', '1:1'):
+        aspect_ratio = '16:9'
+
+    duration_seconds = 8
+    if isinstance(config, dict):
+        try:
+            duration_seconds = int(config.get('durationSeconds', 8))
+        except Exception:
+            duration_seconds = 8
+    duration_seconds = max(4, min(8, duration_seconds))
+
+    # Keep config minimal for broad Veo compatibility.
+    # Some models reject optional fields like enhancePrompt.
+    generate_config = types.GenerateVideosConfig(
+        aspectRatio=aspect_ratio,
+        durationSeconds=duration_seconds
+    )
+
+    try:
+        operation = client.models.generate_videos(
+            model=model_id,
+            source=source,
+            config=generate_config
+        )
+
+        timeout_sec = int(os.environ.get('VIDEO_GENERATION_TIMEOUT_SEC', '900'))
+        poll_interval_sec = int(os.environ.get('VIDEO_GENERATION_POLL_INTERVAL_SEC', '8'))
+        started_at = time.time()
+
+        while not operation.done:
+            if time.time() - started_at > timeout_sec:
+                raise ValueError("Video generation timed out. Please try again.")
+            time.sleep(poll_interval_sec)
+            operation = client.operations.get(operation)
+
+        response = getattr(operation, 'response', None)
+        if not response or not getattr(response, 'generated_videos', None):
+            raise ValueError("Video generation finished but no video was returned.")
+
+        generated = response.generated_videos[0]
+        video_obj = getattr(generated, 'video', None)
+        if not video_obj:
+            raise ValueError("Generated video object is missing.")
+
+        try:
+            client.files.download(file=video_obj)
+        except Exception:
+            # Some SDK/runtime combinations still allow .save without explicit download.
+            pass
+
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            video_obj.save(tmp_path)
+            with open(tmp_path, 'rb') as f:
+                video_bytes = f.read()
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+        if not video_bytes:
+            raise ValueError("Generated video bytes are empty.")
+
+        mime_type = getattr(video_obj, 'mimeType', None) or getattr(video_obj, 'mime_type', None) or 'video/mp4'
+        return video_bytes, mime_type, model_id
+
+    except Exception as video_error:
+        print(f"VIDEO GENERATION FAILED: {video_error}")
+        raise video_error
 
 
 

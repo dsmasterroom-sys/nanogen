@@ -15,6 +15,15 @@ class SourceImage(models.Model):
     def __str__(self):
         return f"Source {self.id} - {self.created_at}"
 
+
+class GeneratedVideo(models.Model):
+    video = models.FileField(upload_to='generated_videos/')
+    prompt = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Video {self.id} - {self.created_at}"
+
 class MidjourneyOption(models.Model):
     CATEGORY_CHOICES = [
         ('styles', 'Style / Look'),

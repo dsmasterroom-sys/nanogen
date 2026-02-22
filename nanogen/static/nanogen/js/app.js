@@ -416,6 +416,25 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 </div>
 
+                <div id="workflowStartModal" class="hidden absolute inset-0 z-50 bg-black/80 p-4 md:p-8">
+                    <div class="h-full w-full max-w-lg mx-auto flex items-center justify-center">
+                        <div class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl p-5 space-y-4">
+                            <div>
+                                <h3 class="text-sm font-semibold text-zinc-100">Start Workflow Studio</h3>
+                                <p class="text-xs text-zinc-400 mt-1">기존 워크플로를 불러오거나 새 워크플로를 생성해 시작하세요.</p>
+                            </div>
+                            <div class="space-y-2">
+                                <label class="text-[11px] text-zinc-400 uppercase tracking-wider">Existing Workflow</label>
+                                <select id="workflowStartSelect" class="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 outline-none focus:border-yellow-500/50 focus:ring-1 focus:ring-yellow-500/50"></select>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <button id="workflowStartLoadBtn" class="px-3 py-2 rounded-lg bg-blue-700/70 hover:bg-blue-600 border border-blue-500/40 text-sm text-blue-100">Load Selected</button>
+                                <button id="workflowStartNewBtn" class="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-sm text-zinc-200">New Workflow</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Run Pipeline Button -->
                 <div class="absolute top-4 right-4 z-10">
                     <button id="runWorkflowBtn" class="px-4 py-2 bg-gradient-to-r from-yellow-500 to-amber-600 border border-yellow-500/50 rounded-xl text-sm font-bold text-black hover:shadow-yellow-500/20 shadow-2xl flex items-center gap-2 transform hover:scale-105 transition-all">
@@ -591,13 +610,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     workflows: normalizedWorkflows,
                     activeId: parsed?.activeId || null
                 };
-                if (base.workflows.length === 0) {
-                    const first = createWorkflowEntry('Workflow 1', getEmptyWorkflowGraph());
-                    base.workflows.push(first);
-                    base.activeId = first.id;
-                }
                 if (!base.activeId || !base.workflows.find((w) => w.id === base.activeId)) {
-                    base.activeId = base.workflows[0].id;
+                    base.activeId = null;
                 }
                 return base;
             };
@@ -651,6 +665,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const renderWorkflowOptions = (store) => {
                 workflowSelect.innerHTML = '';
+                if (!store.workflows || store.workflows.length === 0) {
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No workflows yet';
+                    option.disabled = true;
+                    option.selected = true;
+                    workflowSelect.appendChild(option);
+                    return;
+                }
                 store.workflows.forEach((workflow) => {
                     const option = document.createElement('option');
                     option.value = workflow.id;
@@ -660,7 +683,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (store.activeId && store.workflows.find((w) => w.id === store.activeId)) {
                     workflowSelect.value = store.activeId;
                 } else {
-                    workflowSelect.selectedIndex = -1;
+                    workflowSelect.selectedIndex = 0;
                 }
             };
 
@@ -722,6 +745,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         const refRemoveEl = dom.querySelector('.node-generator-reference-remove');
                         const resultContainer = dom.querySelector('.node-result-container');
                         const statusEl = dom.querySelector('.NodeStatusStatus');
+                        if (resultContainer) {
+                            // Normalize legacy saved node HTML so result view never overlaps tab/header controls.
+                            resultContainer.classList.remove('absolute', 'inset-0', 'p-2');
+                            resultContainer.classList.add('h-full', 'overflow-hidden');
+                        }
                         if (outputTypeEl && data.outputType) outputTypeEl.value = data.outputType;
                         syncGeneratorModelOptions(dom);
                         if (modelEl && data.modelId) modelEl.value = data.modelId;
@@ -743,6 +771,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             const resultType = data.resultType || '';
                             const resultImages = Array.isArray(data.generatedImageUrls) ? data.generatedImageUrls.filter(Boolean) : [];
                             const resultText = data.generatedTextResult || '';
+                            const resultVideo = data.generatedVideoUrl || '';
                             if (resultType === 'image' && resultImages.length > 0) {
                                 if (resultImages.length === 1) {
                                     resultContainer.innerHTML = `<img src="${resultImages[0]}" class="w-full h-auto object-cover border border-zinc-700/50 rounded cursor-pointer hover:opacity-90 transition-opacity" onclick="window.openImageModal(this.src, '')">`;
@@ -751,8 +780,11 @@ document.addEventListener('DOMContentLoaded', () => {
                                     resultContainer.innerHTML = `<div class="grid grid-cols-2 gap-2 p-2 bg-black/30 rounded">${items}</div>`;
                                 }
                                 resultContainer.classList.remove('hidden');
+                            } else if (resultType === 'video' && resultVideo) {
+                                resultContainer.innerHTML = `<video src="${resultVideo}" class="w-full h-auto object-cover border border-zinc-700/50 rounded bg-black" controls playsinline></video>`;
+                                resultContainer.classList.remove('hidden');
                             } else if (resultType === 'text' && resultText) {
-                                resultContainer.innerHTML = `<div class="p-2 bg-black/50 text-[10px] text-zinc-300 break-all leading-tight">${String(resultText)}</div>`;
+                                resultContainer.innerHTML = `<textarea class="node-result-text w-full h-full bg-transparent px-4 pt-14 pb-14 text-sm text-zinc-100 outline-none resize-none custom-scrollbar">${String(resultText)}</textarea>`;
                                 resultContainer.classList.remove('hidden');
                             } else {
                                 resultContainer.innerHTML = '';
@@ -767,6 +799,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (outDisplay) {
                             if ((data.outputDisplayType || '') === 'image' && data.outputDisplayImage) {
                                 outDisplay.innerHTML = `<img src="${data.outputDisplayImage}" class="w-full h-auto object-contain rounded">`;
+                            } else if ((data.outputDisplayType || '') === 'video' && data.outputDisplayVideo) {
+                                outDisplay.innerHTML = `<video src="${data.outputDisplayVideo}" class="w-full h-auto object-contain rounded bg-black" controls playsinline></video>`;
                             } else if ((data.outputDisplayType || '') === 'text' && typeof data.outputDisplayText === 'string') {
                                 outDisplay.textContent = data.outputDisplayText;
                             } else {
@@ -827,21 +861,36 @@ document.addEventListener('DOMContentLoaded', () => {
                         data.statusText = statusEl ? statusEl.textContent : 'Waiting...';
                         data.generatorView = dom.dataset.generatorView || 'prompt';
                         data.generatedImageUrls = [];
+                        data.generatedVideoUrl = '';
                         data.generatedTextResult = '';
                         data.resultType = '';
                         if (resultContainer && !resultContainer.classList.contains('hidden')) {
-                            const imageEls = Array.from(resultContainer.querySelectorAll('img'));
-                            const urls = imageEls
-                                .map((img) => img.getAttribute('src') || '')
-                                .filter((src) => src && src !== window.location.href);
-                            if (urls.length > 0) {
-                                data.generatedImageUrls = urls;
-                                data.resultType = 'image';
+                            const videoEl = resultContainer.querySelector('video');
+                            const videoSrc = videoEl ? (videoEl.getAttribute('src') || '') : '';
+                            if (videoSrc && videoSrc !== window.location.href) {
+                                data.generatedVideoUrl = videoSrc;
+                                data.resultType = 'video';
                             } else {
-                                const text = (resultContainer.textContent || '').trim();
-                                if (text) {
-                                    data.generatedTextResult = text;
-                                    data.resultType = 'text';
+                                const imageEls = Array.from(resultContainer.querySelectorAll('img'));
+                                const urls = imageEls
+                                    .map((img) => img.getAttribute('src') || '')
+                                    .filter((src) => src && src !== window.location.href);
+                                if (urls.length > 0) {
+                                    data.generatedImageUrls = urls;
+                                    data.resultType = 'image';
+                                } else {
+                                    const resultTextarea = resultContainer.querySelector('.node-result-text');
+                                    const textFromTextarea = resultTextarea ? (resultTextarea.value || '').trim() : '';
+                                    if (textFromTextarea) {
+                                        data.generatedTextResult = textFromTextarea;
+                                        data.resultType = 'text';
+                                        return;
+                                    }
+                                    const text = (resultContainer.textContent || '').trim();
+                                    if (text) {
+                                        data.generatedTextResult = text;
+                                        data.resultType = 'text';
+                                    }
                                 }
                             }
                         }
@@ -849,13 +898,19 @@ document.addEventListener('DOMContentLoaded', () => {
                         const outDisplay = dom.querySelector('.node-output-display');
                         data.outputDisplayType = '';
                         data.outputDisplayImage = '';
+                        data.outputDisplayVideo = '';
                         data.outputDisplayText = '';
                         if (outDisplay) {
                             const outImg = outDisplay.querySelector('img');
+                            const outVideo = outDisplay.querySelector('video');
                             const outSrc = outImg ? (outImg.getAttribute('src') || '') : '';
+                            const outVideoSrc = outVideo ? (outVideo.getAttribute('src') || '') : '';
                             if (outSrc && outSrc !== window.location.href) {
                                 data.outputDisplayType = 'image';
                                 data.outputDisplayImage = outSrc;
+                            } else if (outVideoSrc && outVideoSrc !== window.location.href) {
+                                data.outputDisplayType = 'video';
+                                data.outputDisplayVideo = outVideoSrc;
                             } else {
                                 data.outputDisplayType = 'text';
                                 data.outputDisplayText = outDisplay.textContent || '';
@@ -997,6 +1052,83 @@ document.addEventListener('DOMContentLoaded', () => {
                 renderWorkflowOptions(workflowStore);
             };
 
+            const workflowStartModal = document.getElementById('workflowStartModal');
+            const workflowStartSelect = document.getElementById('workflowStartSelect');
+            const workflowStartLoadBtn = document.getElementById('workflowStartLoadBtn');
+            const workflowStartNewBtn = document.getElementById('workflowStartNewBtn');
+
+            const openWorkflowStartModal = async () => {
+                if (!workflowStartModal || !workflowStartSelect || !workflowStartLoadBtn || !workflowStartNewBtn) {
+                    return;
+                }
+
+                workflowStartSelect.innerHTML = '';
+                if (workflowStore.workflows.length === 0) {
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No workflows available';
+                    option.disabled = true;
+                    option.selected = true;
+                    workflowStartSelect.appendChild(option);
+                    workflowStartLoadBtn.disabled = true;
+                    workflowStartLoadBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                } else {
+                    workflowStore.workflows.forEach((workflow) => {
+                        const option = document.createElement('option');
+                        option.value = workflow.id;
+                        option.textContent = workflow.name || 'Untitled Workflow';
+                        workflowStartSelect.appendChild(option);
+                    });
+                    if (workflowStore.activeId && workflowStore.workflows.find((w) => w.id === workflowStore.activeId)) {
+                        workflowStartSelect.value = workflowStore.activeId;
+                    } else {
+                        workflowStartSelect.selectedIndex = 0;
+                    }
+                    workflowStartLoadBtn.disabled = false;
+                    workflowStartLoadBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                }
+
+                workflowStartModal.classList.remove('hidden');
+
+                const chooseLoad = async () => {
+                    const selectedId = workflowStartSelect.value;
+                    if (!selectedId) {
+                        alert('불러올 워크플로를 선택해 주세요.');
+                        return;
+                    }
+                    workflowStore.activeId = selectedId;
+                    renderWorkflowOptions(workflowStore);
+                    await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+                    workflowStartModal.classList.add('hidden');
+                    workflowStartLoadBtn.onclick = null;
+                    workflowStartNewBtn.onclick = null;
+                };
+
+                const chooseNew = async () => {
+                    const suggested = `Workflow ${workflowStore.workflows.length + 1}`;
+                    const name = prompt('New workflow name:', suggested);
+                    if (name === null) return;
+
+                    const created = createWorkflowEntry((name || suggested).trim(), getEmptyWorkflowGraph());
+                    workflowStore.workflows.push(created);
+                    workflowStore.activeId = created.id;
+                    const saved = await persistWorkflowStore(workflowStore);
+                    if (!saved) {
+                        const detail = lastWorkflowPersistError ? `\nReason: ${lastWorkflowPersistError}` : '';
+                        alert('Failed to create workflow on server.' + detail);
+                        return;
+                    }
+                    renderWorkflowOptions(workflowStore);
+                    await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+                    workflowStartModal.classList.add('hidden');
+                    workflowStartLoadBtn.onclick = null;
+                    workflowStartNewBtn.onclick = null;
+                };
+
+                workflowStartLoadBtn.onclick = chooseLoad;
+                workflowStartNewBtn.onclick = chooseNew;
+            };
+
             let autosaveTimer = null;
             const scheduleWorkflowAutosave = (delayMs = 700) => {
                 if (!workflowStore || !workflowStore.activeId) return;
@@ -1010,17 +1142,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             let workflowStore = await readWorkflowStore();
             renderWorkflowOptions(workflowStore);
-            const startupSuggested = `Workflow ${workflowStore.workflows.length + 1}`;
-            const startupCreated = createWorkflowEntry(startupSuggested, getEmptyWorkflowGraph());
-            workflowStore.workflows.push(startupCreated);
-            workflowStore.activeId = startupCreated.id;
-            const startupSaved = await persistWorkflowStore(workflowStore);
-            if (!startupSaved) {
-                const detail = lastWorkflowPersistError ? `\nReason: ${lastWorkflowPersistError}` : '';
-                alert('Failed to initialize new workflow on server.' + detail);
-            }
-            renderWorkflowOptions(workflowStore);
-            await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+            startBlankWorkflow();
+            await openWorkflowStartModal();
 
             workflowSelect.onchange = async (e) => {
                 const selectedId = e.target.value;
@@ -1043,48 +1166,54 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
             }
 
-            newWorkflowBtn.onclick = async () => {
-                const suggested = `Workflow ${workflowStore.workflows.length + 1}`;
-                const name = prompt('New workflow name:', suggested);
-                if (name === null) return;
+            if (newWorkflowBtn) {
+                newWorkflowBtn.onclick = async () => {
+                    const suggested = `Workflow ${workflowStore.workflows.length + 1}`;
+                    const name = prompt('New workflow name:', suggested);
+                    if (name === null) return;
 
-                const created = createWorkflowEntry((name || suggested).trim(), getEmptyWorkflowGraph());
-                workflowStore.workflows.push(created);
-                workflowStore.activeId = created.id;
-                const saved = await persistWorkflowStore(workflowStore);
-                if (!saved) {
-                    const detail = lastWorkflowPersistError ? `\nReason: ${lastWorkflowPersistError}` : '';
-                    alert('Failed to create workflow on server.' + detail);
-                    return;
-                }
-                renderWorkflowOptions(workflowStore);
-                await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
-            };
+                    const created = createWorkflowEntry((name || suggested).trim(), getEmptyWorkflowGraph());
+                    workflowStore.workflows.push(created);
+                    workflowStore.activeId = created.id;
+                    const saved = await persistWorkflowStore(workflowStore);
+                    if (!saved) {
+                        const detail = lastWorkflowPersistError ? `\nReason: ${lastWorkflowPersistError}` : '';
+                        alert('Failed to create workflow on server.' + detail);
+                        return;
+                    }
+                    renderWorkflowOptions(workflowStore);
+                    await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+                };
+            }
 
-            saveWorkflowBtn.onclick = async () => {
-                const ready = await ensureActiveWorkflow();
-                if (!ready) return;
-                await saveActiveWorkflow(workflowStore, true);
-            };
+            if (saveWorkflowBtn) {
+                saveWorkflowBtn.onclick = async () => {
+                    const ready = await ensureActiveWorkflow();
+                    if (!ready) return;
+                    await saveActiveWorkflow(workflowStore, true);
+                };
+            }
 
-            saveAsWorkflowBtn.onclick = async () => {
-                const ready = await ensureActiveWorkflow();
-                if (!ready) return;
-                await saveActiveWorkflow(workflowStore, false);
-                const base = workflowStore.workflows.find(w => w.id === workflowStore.activeId);
-                const suggested = base ? `${base.name} Copy` : `Workflow ${workflowStore.workflows.length + 1}`;
-                const name = prompt('Save as workflow name:', suggested);
-                if (name === null) return;
+            if (saveAsWorkflowBtn) {
+                saveAsWorkflowBtn.onclick = async () => {
+                    const ready = await ensureActiveWorkflow();
+                    if (!ready) return;
+                    await saveActiveWorkflow(workflowStore, false);
+                    const base = workflowStore.workflows.find(w => w.id === workflowStore.activeId);
+                    const suggested = base ? `${base.name} Copy` : `Workflow ${workflowStore.workflows.length + 1}`;
+                    const name = prompt('Save as workflow name:', suggested);
+                    if (name === null) return;
 
-                const copiedGraph = captureNodeUIIntoGraph(window.editor.export());
-                const created = createWorkflowEntry((name || suggested).trim(), copiedGraph);
-                workflowStore.workflows.push(created);
-                workflowStore.activeId = created.id;
-                await persistWorkflowStore(workflowStore);
-                renderWorkflowOptions(workflowStore);
-                await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
-                alert(`Saved as: ${created.name}`);
-            };
+                    const copiedGraph = captureNodeUIIntoGraph(window.editor.export());
+                    const created = createWorkflowEntry((name || suggested).trim(), copiedGraph);
+                    workflowStore.workflows.push(created);
+                    workflowStore.activeId = created.id;
+                    await persistWorkflowStore(workflowStore);
+                    renderWorkflowOptions(workflowStore);
+                    await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+                    alert(`Saved as: ${created.name}`);
+                };
+            }
 
             if (renameWorkflowBtn) {
                 renameWorkflowBtn.onclick = async () => {
@@ -1126,27 +1255,29 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
             }
 
-            deleteWorkflowBtn.onclick = async () => {
-                if (!workflowStore.activeId) {
-                    alert('삭제할 활성 워크플로가 없습니다. 먼저 Load 하세요.');
-                    return;
-                }
-                if (workflowStore.workflows.length <= 1) {
-                    alert('At least one workflow must remain.');
-                    return;
-                }
-                const target = workflowStore.workflows.find(w => w.id === workflowStore.activeId);
-                if (!target) return;
+            if (deleteWorkflowBtn) {
+                deleteWorkflowBtn.onclick = async () => {
+                    if (!workflowStore.activeId) {
+                        alert('삭제할 활성 워크플로가 없습니다. 먼저 Load 하세요.');
+                        return;
+                    }
+                    if (workflowStore.workflows.length <= 1) {
+                        alert('At least one workflow must remain.');
+                        return;
+                    }
+                    const target = workflowStore.workflows.find(w => w.id === workflowStore.activeId);
+                    if (!target) return;
 
-                const ok = confirm(`Delete workflow "${target.name}"?`);
-                if (!ok) return;
+                    const ok = confirm(`Delete workflow "${target.name}"?`);
+                    if (!ok) return;
 
-                workflowStore.workflows = workflowStore.workflows.filter(w => w.id !== target.id);
-                workflowStore.activeId = workflowStore.workflows[0].id;
-                await persistWorkflowStore(workflowStore);
-                renderWorkflowOptions(workflowStore);
-                await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
-            };
+                    workflowStore.workflows = workflowStore.workflows.filter(w => w.id !== target.id);
+                    workflowStore.activeId = workflowStore.workflows[0].id;
+                    await persistWorkflowStore(workflowStore);
+                    renderWorkflowOptions(workflowStore);
+                    await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+                };
+            }
 
             const textPreviewModal = document.getElementById('workflowTextPreviewModal');
             const textPreviewInput = document.getElementById('workflowTextPreviewInput');
@@ -1391,7 +1522,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 nodeEl.appendChild(handle);
             };
 
-            const decorateAllPorts = () => {
+            function decorateAllPorts() {
                 try {
                     const exportData = window.editor.export();
                     const nodes = exportData?.drawflow?.Home?.data || {};
@@ -1402,9 +1533,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch (err) {
                     console.warn('decorateAllPorts skipped due to editor state:', err);
                 }
-            };
+            }
 
-            const applyNoDragGuards = (rootEl = container) => {
+            function applyNoDragGuards(rootEl = container) {
                 if (!rootEl) return;
                 const selector = [
                     '.drawflow-node textarea',
@@ -1418,7 +1549,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 rootEl.querySelectorAll(selector).forEach((el) => {
                     el.classList.add('nodrag');
                 });
-            };
+            }
 
             const HEADING_STYLE_MAP = {
                 h1: { fontSize: '40px', lineHeight: '1.12', baseWeight: '800' },
@@ -1498,8 +1629,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (Prompt)' }
                     ],
                     video: [
-                        { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Video Prompt)' },
-                        { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (Video Prompt)' }
+                        { value: 'veo-3.1-generate-preview', label: 'Veo 3.1' },
+                        { value: 'veo-3.1-fast-generate-preview', label: 'Veo 3.1 Fast' }
                     ]
                 };
                 if (outputType === 'prompt') return modelOptions.prompt;
@@ -1528,6 +1659,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!nodeEl) return;
                 const promptEl = nodeEl.querySelector('.node-gen-prompt');
                 const resultEl = nodeEl.querySelector('.node-result-container');
+                const refPreviewEl = nodeEl.querySelector('.node-generator-reference-preview');
+                const refRemoveEl = nodeEl.querySelector('.node-generator-reference-remove');
                 if (!promptEl || !resultEl) return;
 
                 const nextView = view === 'result' ? 'result' : 'prompt';
@@ -1536,10 +1669,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (nextView === 'result') {
                     promptEl.classList.add('hidden');
                     resultEl.classList.remove('hidden');
+                    resultEl.classList.remove('absolute', 'inset-0', 'p-2');
+                    resultEl.classList.add('h-full', 'overflow-hidden');
+                    if (refPreviewEl) refPreviewEl.classList.add('hidden');
+                    if (refRemoveEl) refRemoveEl.classList.add('hidden');
                 } else {
                     promptEl.classList.remove('hidden');
-                    if ((resultEl.innerHTML || '').trim() === '') {
-                        resultEl.classList.add('hidden');
+                    resultEl.classList.add('hidden');
+                    if (refPreviewEl && refPreviewEl.src) {
+                        refPreviewEl.classList.remove('hidden');
+                        if (refRemoveEl) refRemoveEl.classList.remove('hidden');
                     }
                 }
 
@@ -1717,7 +1856,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                             <i data-lucide="layout-panel-top" class="w-3.5 h-3.5"></i>
                                         </button>
                                     </div>
-                                    <div class="node-result-container hidden absolute inset-0 p-2"></div>
+                                    <div class="node-result-container hidden h-full overflow-hidden"></div>
                                     <img class="node-generator-reference-preview hidden absolute inset-0 w-full h-full object-cover opacity-45">
                                     <button type="button" class="node-generator-reference-remove hidden absolute top-2 right-2 p-1.5 bg-black/60 rounded-full text-red-300 hover:text-red-200">
                                         <i data-lucide="x" class="w-3.5 h-3.5"></i>
@@ -2040,6 +2179,38 @@ document.addEventListener('DOMContentLoaded', () => {
                 return needed;
             };
 
+            const getReusableNodeResult = (node) => {
+                if (!node || typeof node !== 'object') return null;
+                const data = (node.data && typeof node.data === 'object') ? node.data : {};
+
+                if (node.name === 'text_input') {
+                    const text = typeof data.text === 'string' ? data.text.trim() : '';
+                    return text ? text : null;
+                }
+                if (node.name === 'image_input') {
+                    return (typeof data.imageBase64 === 'string' && data.imageBase64) ? data.imageBase64 : null;
+                }
+                if (node.name === 'video_input') {
+                    return (typeof data.videoUrl === 'string' && data.videoUrl) ? data.videoUrl : null;
+                }
+                if (node.name === 'generator' || node.name === 'prompt_gen' || node.name === 'image_gen' || node.name === 'video_gen' || node.name === 'base_gen' || node.name === 'modifier') {
+                    const resultType = data.resultType || '';
+                    if (resultType === 'image') {
+                        const urls = Array.isArray(data.generatedImageUrls) ? data.generatedImageUrls.filter(Boolean) : [];
+                        return urls.length > 0 ? urls[0] : null;
+                    }
+                    if (resultType === 'video') {
+                        return (typeof data.generatedVideoUrl === 'string' && data.generatedVideoUrl) ? data.generatedVideoUrl : null;
+                    }
+                    if (resultType === 'text') {
+                        return (typeof data.generatedTextResult === 'string' && data.generatedTextResult.trim())
+                            ? data.generatedTextResult.trim()
+                            : null;
+                    }
+                }
+                return null;
+            };
+
             const runWorkflowPipeline = async (targetNodeId = null) => {
                 await saveActiveWorkflow(workflowStore, false);
                 const exportData = window.editor.export();
@@ -2055,7 +2226,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const getNodeDOM = (id) => document.getElementById('node-' + id);
                 const nodeResults = {}; // Stores base64 images generated by each node
-                let pending = new Set(Array.from(executionScope));
+                const reusedNodeIds = new Set();
+
+                const clearCacheBadges = () => {
+                    Object.keys(nodes).forEach((id) => {
+                        const dom = getNodeDOM(id);
+                        if (!dom) return;
+                        const badge = dom.querySelector('.node-cache-badge');
+                        if (badge) badge.remove();
+                    });
+                };
+
+                const showCacheBadge = (id) => {
+                    const dom = getNodeDOM(id);
+                    if (!dom) return;
+                    const titleBox = dom.querySelector('.title-box');
+                    if (!titleBox) return;
+                    if (titleBox.querySelector('.node-cache-badge')) return;
+                    const badge = document.createElement('span');
+                    badge.className = 'node-cache-badge ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px] uppercase tracking-wide';
+                    badge.textContent = 'Cache Hit';
+                    titleBox.appendChild(badge);
+                };
+
+                clearCacheBadges();
+                if (targetNodeId) {
+                    executionScope.forEach((id) => {
+                        const strId = String(id);
+                        if (strId === String(targetNodeId)) return;
+                        const cached = getReusableNodeResult(nodes[strId]);
+                        if (cached !== null && cached !== undefined && cached !== '') {
+                            nodeResults[strId] = cached;
+                            reusedNodeIds.add(strId);
+                            showCacheBadge(strId);
+                        }
+                    });
+                }
+
+                let pending = new Set(
+                    Array.from(executionScope).filter((id) => {
+                        const strId = String(id);
+                        if (targetNodeId && strId === String(targetNodeId)) return true;
+                        return !(strId in nodeResults);
+                    })
+                );
                 let iterationCount = 0;
 
                 const runBtn = document.getElementById('runWorkflowBtn');
@@ -2078,7 +2292,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     for (let conn of inputConns) {
                                         const sourceNodeId = String(conn.node);
                                         if (!executionScope.has(sourceNodeId)) continue;
-                                        if (!nodeResults[sourceNodeId]) {
+                                        if (!(sourceNodeId in nodeResults)) {
                                             canRun = false;
                                             break;
                                         } else {
@@ -2179,7 +2393,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                             resultUrl = data.prompt;
                                             nodeResults[id] = resultUrl;
                                             if (resultContainer) {
-                                                resultContainer.innerHTML = `<div class="p-2 bg-black/50 text-[10px] text-zinc-300 break-all leading-tight">${data.prompt}</div>`;
+                                                resultContainer.innerHTML = `<textarea class="node-result-text w-full h-full bg-transparent px-4 pt-14 pb-14 text-sm text-zinc-100 outline-none resize-none custom-scrollbar">${data.prompt}</textarea>`;
                                                 setGeneratorView(dom, 'result');
                                             }
                                         } else {
@@ -2235,32 +2449,30 @@ document.addEventListener('DOMContentLoaded', () => {
                                         }
                                     } else if (outputType === 'video') {
                                         const reqBody = {
-                                            subject: combinedPrompt,
-                                            presets: refTexts,
+                                            prompt: combinedPrompt,
                                             referenceImages: refImgs,
                                             config: {
-                                                modelId: modelSelect ? modelSelect.value : 'gemini-2.5-flash',
+                                                modelId: modelSelect ? modelSelect.value : 'veo-3.1-fast-generate-preview',
                                                 aspectRatio,
                                                 resolution
-                                            },
-                                            media_type: 'video'
+                                            }
                                         };
-                                        const res = await fetch('/api/prompt/midjourney', {
+                                        const res = await fetch('/api/generate-video', {
                                             method: 'POST',
                                             headers: { 'Content-Type': 'application/json' },
                                             body: JSON.stringify(reqBody)
                                         });
                                         const data = await res.json();
                                         if (!res.ok) {
-                                            throw new Error(data.error || `Video prompt generation failed (${res.status})`);
+                                            throw new Error(data.error || `Video generation failed (${res.status})`);
                                         }
-                                        if (!data.prompt) {
-                                            throw new Error(data.error || 'Video prompt generation failed');
+                                        if (!data.url) {
+                                            throw new Error(data.error || 'Video generation failed');
                                         }
-                                        resultUrl = `[VIDEO_PROMPT]\n${data.prompt}`;
+                                        resultUrl = data.url;
                                         nodeResults[id] = resultUrl;
                                         if (resultContainer) {
-                                            resultContainer.innerHTML = `<div class="p-2 bg-black/50 text-[10px] text-zinc-300 break-all leading-tight">${String(resultUrl)}</div>`;
+                                            resultContainer.innerHTML = `<video src="${resultUrl}" class="w-full h-auto object-cover border border-zinc-700/50 rounded bg-black" controls playsinline></video>`;
                                             resultContainer.classList.remove('hidden');
                                             setGeneratorView(dom, 'result');
                                         }
@@ -2278,6 +2490,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                         const content = referenceImages[0];
                                         if (typeof content === 'string' && content.startsWith('data:image')) {
                                             outDisplay.innerHTML = `<img src="${content}" class="w-full h-auto object-contain rounded">`;
+                                        } else if (typeof content === 'string' && (content.includes('/generated_videos/') || /\.(mp4|webm|mov)(\?|$)/i.test(content))) {
+                                            outDisplay.innerHTML = `<video src="${content}" class="w-full h-auto object-contain rounded bg-black" controls playsinline></video>`;
                                         } else {
                                             outDisplay.textContent = String(content ?? '');
                                         }
@@ -2296,8 +2510,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                     if (resultContainer) {
                                         if (typeof resultUrl === 'string' && resultUrl.startsWith('data:image')) {
                                             resultContainer.innerHTML = `<img src="${resultUrl}" class="w-full h-auto object-cover border border-zinc-700/50 rounded cursor-pointer hover:opacity-90 transition-opacity" onclick="window.openImageModal(this.src, '')">`;
+                                        } else if (typeof resultUrl === 'string' && (resultUrl.includes('/generated_videos/') || /\.(mp4|webm|mov)(\?|$)/i.test(resultUrl))) {
+                                            resultContainer.innerHTML = `<video src="${resultUrl}" class="w-full h-auto object-cover border border-zinc-700/50 rounded bg-black" controls playsinline></video>`;
                                         } else {
-                                            resultContainer.innerHTML = `<div class="p-2 bg-black/50 text-[10px] text-zinc-300 break-all leading-tight">${String(resultUrl)}</div>`;
+                                            resultContainer.innerHTML = `<textarea class="node-result-text w-full h-full bg-transparent px-4 pt-14 pb-14 text-sm text-zinc-100 outline-none resize-none custom-scrollbar">${String(resultUrl)}</textarea>`;
                                         }
                                     }
                                     const titleBox = dom.querySelector('.title-box');
@@ -2321,6 +2537,18 @@ document.addEventListener('DOMContentLoaded', () => {
                         iterationCount++;
                     }
                     await saveActiveWorkflow(workflowStore, false);
+                    if (targetNodeId && reusedNodeIds.size > 0) {
+                        const runBtn = document.getElementById('runWorkflowBtn');
+                        if (runBtn) {
+                            const currentText = runBtn.innerHTML;
+                            runBtn.innerHTML = `<i data-lucide="database-zap" class="w-4 h-4"></i> Reused ${reusedNodeIds.size} upstream`;
+                            safeCreateIcons();
+                            setTimeout(() => {
+                                runBtn.innerHTML = currentText;
+                                safeCreateIcons();
+                            }, 1200);
+                        }
+                    }
                 } catch (err) {
                     console.error("Workflow execution error:", err);
                     alert("Error Pipeline Execution: " + err.message);
@@ -3003,9 +3231,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="flex justify-between items-center mb-4">
                             <span class="text-sm font-medium text-zinc-400 uppercase tracking-wider">Generated Result</span>
                             <div class="flex gap-2">
-                                <button onclick="window.saveToLibrary()" class="text-xs bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-1.5 rounded-lg border border-zinc-700 flex items-center gap-2 transition-colors">
-                                    <i data-lucide="save" class="w-3 h-3"></i> Save to Library
-                                </button>
                                 <a href="${state.currentImage}" download="generated.png" class="text-xs bg-yellow-600 hover:bg-yellow-500 text-black font-semibold px-3 py-1.5 rounded-lg flex items-center gap-2 transition-colors">
                                     <i data-lucide="download" class="w-3 h-3"></i> Download
                                 </a>
@@ -3072,12 +3297,42 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         // Library Pagination State
-        window.libraryState = { page: 1, hasMore: true, isLoading: false };
+        window.libraryState = { page: 1, hasMore: true, isLoading: false, filter: 'all' };
 
         const renderLibraryView = async (append = false) => {
             if (!append) {
-                window.libraryState = { page: 1, hasMore: true, isLoading: false };
-                els.viewContainer.innerHTML = '<div class="w-full h-full p-6 flex flex-col items-center"><div id="masonryGrid" class="w-full columns-2 md:columns-3 lg:columns-4 gap-4 space-y-4"></div><div id="loadMoreTrigger" class="py-8"><div class="loader"></div></div></div>';
+                window.libraryState = { ...window.libraryState, page: 1, hasMore: true, isLoading: false };
+                const activeFilter = window.libraryState.filter || 'all';
+                els.viewContainer.innerHTML = `
+                <div class="w-full h-full p-6 flex flex-col max-w-7xl mx-auto">
+                    <div class="shrink-0 mb-4 flex items-center justify-between">
+                        <h2 class="text-lg font-semibold text-zinc-200 flex items-center gap-2">
+                            <i data-lucide="library" class="w-4 h-4 text-yellow-500"></i> Library
+                        </h2>
+                        <div class="flex items-center gap-2">
+                            <button id="libFilterAll" class="px-2.5 py-1 rounded-md text-xs border ${activeFilter === 'all' ? 'bg-zinc-700/80 text-white border-zinc-500' : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-700'}">All</button>
+                            <button id="libFilterImage" class="px-2.5 py-1 rounded-md text-xs border ${activeFilter === 'image' ? 'bg-zinc-700/80 text-white border-zinc-500' : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-700'}">Images</button>
+                            <button id="libFilterVideo" class="px-2.5 py-1 rounded-md text-xs border ${activeFilter === 'video' ? 'bg-zinc-700/80 text-white border-zinc-500' : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-700'}">Videos</button>
+                        </div>
+                    </div>
+                    <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+                        <div id="masonryGrid" class="w-full columns-2 md:columns-3 lg:columns-4 gap-4 space-y-4"></div>
+                        <div id="loadMoreTrigger" class="py-8 flex justify-center"><div class="loader"></div></div>
+                    </div>
+                </div>
+                `;
+                const bindFilterBtn = (id, filter) => {
+                    const btn = document.getElementById(id);
+                    if (!btn) return;
+                    btn.onclick = () => {
+                        if (window.libraryState.filter === filter) return;
+                        window.libraryState.filter = filter;
+                        renderLibraryView(false);
+                    };
+                };
+                bindFilterBtn('libFilterAll', 'all');
+                bindFilterBtn('libFilterImage', 'image');
+                bindFilterBtn('libFilterVideo', 'video');
             }
 
             if (window.libraryState.isLoading || !window.libraryState.hasMore) return;
@@ -3090,24 +3345,36 @@ document.addEventListener('DOMContentLoaded', () => {
                 const trigger = document.getElementById('loadMoreTrigger');
 
                 if (data.images && data.images.length > 0) {
-                    const html = data.images.map(img => {
-                        const safePrompt = img.prompt ? img.prompt.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, ' ') : '';
+                    const filteredItems = data.images.filter((item) => {
+                        if (window.libraryState.filter === 'all') return true;
+                        return (item.media_type || 'image') === window.libraryState.filter;
+                    });
+
+                    const html = filteredItems.map(item => {
+                        const safePrompt = item.prompt ? item.prompt.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, ' ') : '';
+                        const safeUrl = item.url ? item.url.replace(/'/g, "\\'") : '';
+                        const safeKey = item.key ? item.key.replace(/'/g, "\\'") : '';
+                        const mediaType = item.media_type || 'image';
+                        const mediaPreview = mediaType === 'video'
+                            ? `<video src="${safeUrl}" class="w-full h-auto object-cover bg-black opacity-0 transition-opacity duration-500" muted playsinline preload="metadata" onloadeddata="document.getElementById('skeleton-${safeKey}')?.remove(); this.classList.remove('opacity-0')"></video>`
+                            : `<img src="${safeUrl}" onload="document.getElementById('skeleton-${safeKey}')?.remove(); this.classList.remove('opacity-0')" class="w-full h-auto object-cover bg-black opacity-0 transition-opacity duration-500">`;
+
                         return `
-                            <div class="relative group rounded-xl overflow-hidden border border-zinc-800 bg-zinc-900 cursor-pointer break-inside-avoid shadow-sm hover:shadow-yellow-500/10 transition-all duration-300 transform hover:-translate-y-1" onclick="window.openImageModal('${img.url}', '${safePrompt}')">
-                                <div class="absolute inset-0 flex items-center justify-center bg-zinc-900" id="skeleton-${img.id}">
-                                    <i data-lucide="image" class="w-8 h-8 text-zinc-700 animate-pulse"></i>
+                            <div class="relative group rounded-xl overflow-hidden border border-zinc-800 bg-zinc-900 cursor-pointer break-inside-avoid shadow-sm hover:shadow-yellow-500/10 transition-all duration-300 transform hover:-translate-y-1" onclick="window.openMediaModal('${safeUrl}', '${safePrompt}', '${mediaType}')">
+                                <div class="absolute inset-0 flex items-center justify-center bg-zinc-900" id="skeleton-${safeKey}">
+                                    <i data-lucide="${mediaType === 'video' ? 'film' : 'image'}" class="w-8 h-8 text-zinc-700 animate-pulse"></i>
                                 </div>
-                                <img src="${img.url}" onload="document.getElementById('skeleton-${img.id}')?.remove(); this.classList.remove('opacity-0')" class="w-full h-auto object-cover bg-black opacity-0 transition-opacity duration-500">
+                                ${mediaPreview}
                                 
                                 <!-- Hover Overlay for Actions -->
                                 <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
 
                                 <!-- Bottom Right Actions -->
                                 <div class="absolute bottom-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10" onclick="event.stopPropagation()">
-                                    <button onclick="window.downloadImage('${img.url}')" class="p-1.5 bg-zinc-800/90 hover:bg-zinc-700 text-white rounded-md border border-zinc-600 backdrop-blur-sm shadow-sm" title="Download">
+                                    <button onclick="window.downloadImage('${safeUrl}')" class="p-1.5 bg-zinc-800/90 hover:bg-zinc-700 text-white rounded-md border border-zinc-600 backdrop-blur-sm shadow-sm" title="Download">
                                         <i data-lucide="download" class="w-4 h-4"></i>
                                     </button>
-                                    <button onclick="window.deleteImage(${img.id})" class="p-1.5 bg-red-900/80 hover:bg-red-800 text-red-100 rounded-md border border-red-800 backdrop-blur-sm shadow-sm" title="Delete">
+                                    <button onclick="window.deleteImage('${safeKey}')" class="p-1.5 bg-red-900/80 hover:bg-red-800 text-red-100 rounded-md border border-red-800 backdrop-blur-sm shadow-sm" title="Delete">
                                         <i data-lucide="trash-2" class="w-4 h-4"></i>
                                     </button>
                                 </div>
@@ -3121,7 +3388,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Pagination check
                     if (window.libraryState.page >= data.num_pages) {
                         window.libraryState.hasMore = false;
-                        if (trigger) trigger.innerHTML = '<span class="text-zinc-600 text-xs">No more images</span>';
+                        if (trigger) {
+                            const hasRenderedItems = grid && grid.children && grid.children.length > 0;
+                            trigger.innerHTML = hasRenderedItems
+                                ? '<span class="text-zinc-600 text-xs">No more items</span>'
+                                : '<span class="text-zinc-600 text-xs">No items in this filter</span>';
+                        }
                     } else {
                         window.libraryState.page++;
                         if (trigger) trigger.innerHTML = '<button onclick="window.loadMoreLibrary()" class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">Load More</button>';
@@ -3129,8 +3401,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else if (!append) {
                     els.viewContainer.innerHTML = `
                     <div class="w-full h-full flex flex-col items-center justify-center text-zinc-500 gap-2">
-                        <i data-lucide="image" class="w-12 h-12 opacity-20"></i>
-                        <p>No images generated yet.</p>
+                        <i data-lucide="library" class="w-12 h-12 opacity-20"></i>
+                        <p>No generated media yet.</p>
                     </div>
                  `;
                 }
@@ -3149,7 +3421,7 @@ document.addEventListener('DOMContentLoaded', () => {
             renderLibraryView(true);
         };
 
-        window.openImageModal = (url, prompt) => {
+        window.openMediaModal = (url, prompt, mediaType = 'image') => {
             const modal = document.createElement('div');
             modal.className = 'fixed inset-0 z-[100] flex items-center justify-center bg-black/95 p-4 opacity-0 transition-opacity duration-300';
 
@@ -3168,7 +3440,10 @@ document.addEventListener('DOMContentLoaded', () => {
                      <div id="modalSkeleton" class="absolute inset-0 flex items-center justify-center">
                          <div class="w-12 h-12 rounded-full border-4 border-zinc-800 border-t-yellow-500 animate-spin"></div>
                      </div>
-                     <img src="${url}" onload="document.getElementById('modalSkeleton').remove(); this.classList.remove('opacity-0')" class="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl border border-zinc-800 opacity-0 transition-opacity duration-500">
+                     ${mediaType === 'video'
+                        ? `<video src="${url}" controls playsinline class="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl border border-zinc-800 opacity-0 transition-opacity duration-500 bg-black" onloadeddata="document.getElementById('modalSkeleton').remove(); this.classList.remove('opacity-0')"></video>`
+                        : `<img src="${url}" onload="document.getElementById('modalSkeleton').remove(); this.classList.remove('opacity-0')" class="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl border border-zinc-800 opacity-0 transition-opacity duration-500">`
+                     }
                 </div>
                 
                 <!-- Close Button -->
@@ -3227,13 +3502,15 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        window.deleteImage = async (id) => {
-            if (!confirm('Are you sure you want to delete this image?')) return;
+        window.openImageModal = (url, prompt) => window.openMediaModal(url, prompt, 'image');
+
+        window.deleteImage = async (itemKey) => {
+            if (!confirm('Are you sure you want to delete this item?')) return;
             try {
-                await fetch(`/api/images/${id}/delete`, { method: 'DELETE' });
+                await fetch(`/api/library/${encodeURIComponent(itemKey)}/delete`, { method: 'DELETE' });
                 renderLibraryView();
             } catch (e) {
-                alert('Failed to delete image');
+                alert('Failed to delete item');
             }
         };
 

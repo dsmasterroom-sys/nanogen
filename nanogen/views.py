@@ -7,8 +7,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.core.files.base import ContentFile
 from django.templatetags.static import static
 from django.shortcuts import redirect
-from .services import generate_image_with_gemini
-from .models import GeneratedImage, SourceImage, MidjourneyOption, WorkflowStore
+from django.conf import settings
+from .models import GeneratedImage, GeneratedVideo, SourceImage, MidjourneyOption, WorkflowStore
 
 
 def index(request):
@@ -325,7 +325,7 @@ def delete_source_image(request, image_id):
              return JsonResponse({'error': str(e)}, status=500)
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 
-from .services import generate_image_with_gemini, generate_midjourney_prompt
+from .services import generate_image_with_gemini, generate_midjourney_prompt, generate_video_with_veo
 
 # ... existing code ...
 
@@ -358,7 +358,7 @@ def generate_image_view(request):
             # Generate image (returns base64 data URI)
             image_b64_uri = generate_image_with_gemini(prompt, config, reference_images, mask_image)
             
-            # Save to Database (GeneratedImage + SourceImage)
+            # Save to Database (GeneratedImage only; do not auto-save to Source Library)
             try:
                 if 'base64,' in image_b64_uri:
                     format_str, imgstr = image_b64_uri.split(';base64,') 
@@ -366,27 +366,18 @@ def generate_image_view(request):
                     image_bytes = base64.b64decode(imgstr)
 
                     generated_filename = f"generated_{uuid.uuid4()}.{ext}"
-                    source_filename = f"source_from_generated_{uuid.uuid4()}.{ext}"
 
                     generated_image = GeneratedImage.objects.create(
                         image=ContentFile(image_bytes, name=generated_filename),
                         prompt=prompt
                     )
-
-                    source_image = SourceImage.objects.create(
-                        image=ContentFile(image_bytes, name=source_filename)
-                    )
                     
-                    # Return inline URL for immediate display + saved records for libraries/downloads
+                    # Return inline URL for immediate display + saved image record
                     return JsonResponse({
                         'url': image_b64_uri,
                         'saved_image': {
                             'id': generated_image.id,
                             'url': generated_image.image.url
-                        },
-                        'saved_source': {
-                            'id': source_image.id,
-                            'url': source_image.image.url
                         }
                     })
             except Exception as save_error:
@@ -407,28 +398,93 @@ def generate_image_view(request):
     
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 
+
+@csrf_exempt
+def generate_video_view(request):
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+
+    try:
+        req_data = json.loads(request.body or '{}')
+        prompt = req_data.get('prompt')
+        config = req_data.get('config', {}) or {}
+        reference_images = req_data.get('referenceImages', []) or []
+
+        if not prompt:
+            return JsonResponse({'error': 'Prompt is required'}, status=400)
+
+        video_bytes, mime_type, used_model = generate_video_with_veo(
+            prompt=prompt,
+            config=config,
+            reference_images=reference_images
+        )
+
+        ext = 'mp4'
+        if isinstance(mime_type, str):
+            lower = mime_type.lower()
+            if 'webm' in lower:
+                ext = 'webm'
+            elif 'quicktime' in lower or 'mov' in lower:
+                ext = 'mov'
+
+        filename = f"generated_video_{uuid.uuid4()}.{ext}"
+        generated_video = GeneratedVideo.objects.create(
+            video=ContentFile(video_bytes, name=filename),
+            prompt=prompt
+        )
+
+        return JsonResponse({
+            'url': generated_video.video.url,
+            'mimeType': mime_type,
+            'model': used_model,
+            'saved_video': {
+                'id': generated_video.id,
+                'url': generated_video.video.url
+            }
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'error': str(e)}, status=500)
+
 @csrf_exempt
 def list_images(request):
     try:
         from django.core.paginator import Paginator
+        from django.utils.dateparse import parse_datetime
         page = request.GET.get('page', 1)
-        limit = request.GET.get('limit', 20)
-        
-        images_query = GeneratedImage.objects.all().order_by('-created_at')
-        paginator = Paginator(images_query, limit)
-        images = paginator.get_page(page)
-        
-        data = []
-        for img in images:
-            data.append({
+        limit = int(request.GET.get('limit', 20))
+
+        items = []
+        for img in GeneratedImage.objects.all().only('id', 'image', 'prompt', 'created_at'):
+            items.append({
+                'key': f"img:{img.id}",
                 'id': img.id,
+                'media_type': 'image',
                 'url': img.image.url,
                 'prompt': img.prompt,
                 'created_at': img.created_at.isoformat()
             })
+
+        for vid in GeneratedVideo.objects.all().only('id', 'video', 'prompt', 'created_at'):
+            items.append({
+                'key': f"vid:{vid.id}",
+                'id': vid.id,
+                'media_type': 'video',
+                'url': vid.video.url,
+                'prompt': vid.prompt,
+                'created_at': vid.created_at.isoformat()
+            })
+
+        items.sort(key=lambda x: parse_datetime(x['created_at']), reverse=True)
+
+        paginator = Paginator(items, limit)
+        page_obj = paginator.get_page(page)
+
         return JsonResponse({
-            'images': data,
-            'page': images.number,
+            'images': list(page_obj.object_list),
+            'page': page_obj.number,
             'num_pages': paginator.num_pages,
             'total': paginator.count
         })
@@ -447,3 +503,31 @@ def delete_image(request, image_id):
         except Exception as e:
              return JsonResponse({'error': str(e)}, status=500)
     return JsonResponse({'error': 'Method not allowed'}, status=405)
+
+
+@csrf_exempt
+def delete_library_item(request, item_key):
+    if request.method != 'DELETE':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+
+    try:
+        if ':' not in item_key:
+            return JsonResponse({'error': 'Invalid item key'}, status=400)
+        prefix, raw_id = item_key.split(':', 1)
+        item_id = int(raw_id)
+
+        if prefix == 'img':
+            image = get_object_or_404(GeneratedImage, id=item_id)
+            image.image.delete()
+            image.delete()
+            return JsonResponse({'success': True})
+
+        if prefix == 'vid':
+            video = get_object_or_404(GeneratedVideo, id=item_id)
+            video.video.delete()
+            video.delete()
+            return JsonResponse({'success': True})
+
+        return JsonResponse({'error': 'Unsupported item type'}, status=400)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
