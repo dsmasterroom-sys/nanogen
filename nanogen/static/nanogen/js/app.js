@@ -16,14 +16,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const DEFAULT_PRESETS = [
         {
             id: 'default-comp-1',
-            name: '?섏긽援먯껜',
+            name: '의상교체',
             text: "Change only the main clothing garments to strictly match the design, texture, and details of the provided clothing reference image. Replicate the attached outfit exactly. Crucially, preserve all original accessories intact (including bags, earrings, rings, jewelry, eyewear, etc.). Keep the original model's face, pose, hair, background, and lighting exactly the same. Seamless integration, photorealistic, 8k resolution.",
             mode: 'composition'
         },
         {
             id: 'default-gen-1',
-            name: '9遺꾪븷',
-            text: "Acting as an award-winning cinematographer and storyboard artist, analyze the provided reference image to output a detailed textual plan for a 10-20 second cinematic sequence with a 4-beat arc?봧ncluding scene analysis, story theme, cinematic approach, and precise definitions for 9-12 keyframes?봞nd then finally generate a single high-resolution 3x3 master contact sheet grid image visualizing these keyframes while maintaining strict visual continuity of the original subject and environment with clear labels for each shot.",
+            name: '9분할',
+            text: "Acting as an award-winning cinematographer and storyboard artist, analyze the provided reference image to output a detailed textual plan for a 10-20 second cinematic sequence with a 4-beat arc, including scene analysis, story theme, cinematic approach, and precise definitions for 9-12 keyframes, and then finally generate a single high-resolution 3x3 master contact sheet grid image visualizing these keyframes while maintaining strict visual continuity of the original subject and environment with clear labels for each shot.",
             mode: 'generation'
         },
         {
@@ -560,8 +560,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const workflowSelect = document.getElementById('workflowSelect');
             const newWorkflowBtn = document.getElementById('newWorkflowBtn');
+            const loadWorkflowBtn = document.getElementById('loadWorkflowBtn');
             const saveWorkflowBtn = document.getElementById('saveWorkflowBtn');
             const saveAsWorkflowBtn = document.getElementById('saveAsWorkflowBtn');
+            const renameWorkflowBtn = document.getElementById('renameWorkflowBtn');
             const deleteWorkflowBtn = document.getElementById('deleteWorkflowBtn');
 
             const getEmptyWorkflowGraph = () => ({ drawflow: { Home: { data: {} } } });
@@ -573,74 +575,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 graph: graph || getEmptyWorkflowGraph()
             });
 
-            const WORKFLOW_IDB_NAME = 'nanoGenWorkflowDB';
-            const WORKFLOW_IDB_STORE = 'workflow_store';
-            const WORKFLOW_IDB_KEY = 'main';
-            const WORKFLOW_STORAGE_FULL_BACKUP_KEY = `${WORKFLOW_STORAGE_KEY}FullBackup`;
             let lastWorkflowPersistError = '';
-            let serverSaveWarningShown = false;
-
-            const openWorkflowDb = () => new Promise((resolve, reject) => {
-                if (!window.indexedDB) {
-                    reject(new Error('IndexedDB is not supported in this browser.'));
-                    return;
-                }
-                const req = indexedDB.open(WORKFLOW_IDB_NAME, 1);
-                req.onupgradeneeded = () => {
-                    const db = req.result;
-                    if (!db.objectStoreNames.contains(WORKFLOW_IDB_STORE)) {
-                        db.createObjectStore(WORKFLOW_IDB_STORE);
-                    }
-                };
-                req.onsuccess = () => resolve(req.result);
-                req.onerror = () => reject(req.error || new Error('Failed to open workflow IndexedDB'));
-            });
-
-            const readWorkflowStoreFromIdb = async () => {
-                try {
-                    const db = await openWorkflowDb();
-                    return await new Promise((resolve, reject) => {
-                        const tx = db.transaction(WORKFLOW_IDB_STORE, 'readonly');
-                        const store = tx.objectStore(WORKFLOW_IDB_STORE);
-                        const req = store.get(WORKFLOW_IDB_KEY);
-                        req.onsuccess = () => resolve(req.result || null);
-                        req.onerror = () => reject(req.error || new Error('Failed to read workflow store from IndexedDB'));
-                        tx.oncomplete = () => db.close();
-                    });
-                } catch (err) {
-                    console.warn('IndexedDB read failed. Falling back to localStorage.', err);
-                    return null;
-                }
-            };
-
-            const persistWorkflowStoreToIdb = async (store) => {
-                const db = await openWorkflowDb();
-                return await new Promise((resolve, reject) => {
-                    const tx = db.transaction(WORKFLOW_IDB_STORE, 'readwrite');
-                    const os = tx.objectStore(WORKFLOW_IDB_STORE);
-                    const req = os.put(store, WORKFLOW_IDB_KEY);
-                    req.onerror = () => reject(req.error || new Error('Failed to write workflow store to IndexedDB'));
-                    tx.oncomplete = () => {
-                        db.close();
-                        resolve(true);
-                    };
-                    tx.onerror = () => reject(tx.error || new Error('IndexedDB write transaction failed'));
-                });
-            };
-
-            const parseLocalWorkflowStore = () => {
-                try {
-                    const raw = localStorage.getItem(WORKFLOW_STORAGE_FULL_BACKUP_KEY) || localStorage.getItem(WORKFLOW_STORAGE_KEY);
-                    return raw ? JSON.parse(raw) : null;
-                } catch (err) {
-                    console.warn('Failed to parse workflow store from localStorage.', err);
-                    return null;
-                }
-            };
 
             const normalizeWorkflowStore = (parsed) => {
+                const normalizedWorkflows = (Array.isArray(parsed?.workflows) ? parsed.workflows : [])
+                    .filter((w) => w && w.id)
+                    .map((w) => ({
+                        id: w.id,
+                        name: w.name || 'Untitled Workflow',
+                        updatedAt: w.updatedAt || new Date().toISOString(),
+                        graph: (w.graph && typeof w.graph === 'object') ? w.graph : getEmptyWorkflowGraph()
+                    }));
+
                 const base = {
-                    workflows: Array.isArray(parsed?.workflows) ? parsed.workflows : [],
+                    workflows: normalizedWorkflows,
                     activeId: parsed?.activeId || null
                 };
                 if (base.workflows.length === 0) {
@@ -655,98 +603,48 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             const readWorkflowStore = async () => {
-                let serverNormalized = null;
                 try {
-                    const res = await fetch('/api/workflow/store');
-                    if (res.ok) {
-                        const payload = await res.json();
-                        const serverStore = payload && payload.store;
-                        if (serverStore && Array.isArray(serverStore.workflows)) {
-                            const normalizedServer = normalizeWorkflowStore(serverStore);
-                            serverNormalized = normalizedServer;
-                            try {
-                                await persistWorkflowStoreToIdb(normalizedServer);
-                            } catch (err) {
-                                console.warn('Server->IndexedDB sync failed.', err);
-                            }
+                    const res = await fetch(`/api/workflow/store?_ts=${Date.now()}`, {
+                        method: 'GET',
+                        cache: 'no-store',
+                        headers: {
+                            'Cache-Control': 'no-cache'
                         }
+                    });
+                    if (!res.ok) {
+                        throw new Error(`HTTP ${res.status}`);
                     }
+                    const payload = await res.json();
+                    const serverStore = payload && payload.store;
+                    return normalizeWorkflowStore(serverStore);
                 } catch (err) {
-                    console.warn('Server workflow read failed. Falling back to local stores.', err);
+                    lastWorkflowPersistError = err?.message || 'Failed to read workflow store';
+                    console.error('Server workflow read failed:', err);
+                    const fallback = normalizeWorkflowStore(null);
+                    alert('워크플로를 서버에서 불러오지 못했습니다. 네트워크/서버 상태를 확인해 주세요.');
+                    return fallback;
                 }
-
-                const idbStore = await readWorkflowStoreFromIdb();
-                const normalizedIdb = (idbStore && Array.isArray(idbStore.workflows) && idbStore.workflows.length > 0) ? normalizeWorkflowStore(idbStore) : null;
-                if (serverNormalized && serverNormalized.workflows && serverNormalized.workflows.length > 0) {
-                    return serverNormalized;
-                }
-                if (normalizedIdb) {
-                    return normalizedIdb;
-                }
-
-                const localStore = parseLocalWorkflowStore();
-                const normalized = normalizeWorkflowStore(localStore);
-                try {
-                    await persistWorkflowStoreToIdb(normalized);
-                } catch (err) {
-                    console.warn('Initial workflow sync to IndexedDB failed.', err);
-                }
-                return normalized;
             };
 
             const persistWorkflowStore = async (store) => {
                 try {
                     lastWorkflowPersistError = '';
-                    let serverSaved = false;
-                    try {
-                        const res = await fetch('/api/workflow/store', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ store })
-                        });
-                        if (!res.ok) {
-                            const errBody = await res.json().catch(() => ({}));
-                            lastWorkflowPersistError = errBody?.error || `HTTP ${res.status}`;
-                            console.warn('Server workflow save failed:', lastWorkflowPersistError);
-                        } else {
-                            serverSaved = true;
-                        }
-                    } catch (serverErr) {
-                        lastWorkflowPersistError = serverErr?.message || 'Network error';
-                        console.warn('Server workflow save error:', serverErr);
-                    }
-
-                    await persistWorkflowStoreToIdb(store);
-                    try {
-                        localStorage.setItem(WORKFLOW_STORAGE_FULL_BACKUP_KEY, JSON.stringify(store));
-                    } catch (fullErr) {
-                        console.warn('Workflow full backup sync to localStorage failed.', fullErr);
-                    }
-                    const lite = {
-                        activeId: store.activeId,
-                        workflows: (store.workflows || []).map((w) => ({
-                            id: w.id,
-                            name: w.name,
-                            updatedAt: w.updatedAt
-                        })),
-                        storage: 'indexeddb'
-                    };
-                    try {
-                        localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(lite));
-                    } catch (metaErr) {
-                        console.warn('Workflow metadata sync to localStorage failed, but IndexedDB save succeeded.', metaErr);
-                    }
-                    if (!serverSaved) {
-                        if (!serverSaveWarningShown) {
-                            serverSaveWarningShown = true;
-                            console.warn('Workflow server save unavailable. Using local backup storage.', lastWorkflowPersistError);
-                        }
-                        return true;
+                    const res = await fetch('/api/workflow/store', {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ store })
+                    });
+                    if (!res.ok) {
+                        const errBody = await res.json().catch(() => ({}));
+                        lastWorkflowPersistError = errBody?.error || `HTTP ${res.status}`;
+                        console.error('Server workflow save failed:', lastWorkflowPersistError);
+                        return false;
                     }
                     return true;
                 } catch (err) {
-                    lastWorkflowPersistError = err?.message || 'IndexedDB write failed';
-                    console.error('Workflow store save failed (IndexedDB).', err);
+                    lastWorkflowPersistError = err?.message || 'Network error';
+                    console.error('Server workflow save error:', err);
                     return false;
                 }
             };
@@ -759,7 +657,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     option.textContent = workflow.name || 'Untitled Workflow';
                     workflowSelect.appendChild(option);
                 });
-                workflowSelect.value = store.activeId;
+                if (store.activeId && store.workflows.find((w) => w.id === store.activeId)) {
+                    workflowSelect.value = store.activeId;
+                } else {
+                    workflowSelect.selectedIndex = -1;
+                }
             };
 
             const hydrateNodeUIFromData = () => {
@@ -985,18 +887,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const importGraphSafely = (graph) => {
                     const normalized = normalizeGraph(graph);
+                    if (typeof window.editor.clear === 'function') {
+                        window.editor.clear();
+                    }
                     window.editor.import(normalized);
                     return normalized;
+                };
+
+                const waitForWorkflowNodeDom = async (graph, maxAttempts = 20, intervalMs = 25) => {
+                    const nodes = graph?.drawflow?.Home?.data || {};
+                    const ids = Object.keys(nodes);
+                    if (ids.length === 0) return;
+                    for (let i = 0; i < maxAttempts; i++) {
+                        const ready = ids.every((id) => !!document.getElementById('node-' + id));
+                        if (ready) return;
+                        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+                    }
                 };
 
                 try {
                     workflow.graph = importGraphSafely(workflow.graph || getEmptyWorkflowGraph());
                     try {
+                        await waitForWorkflowNodeDom(workflow.graph);
                         await new Promise((resolve) => requestAnimationFrame(resolve));
                         decorateAllPorts();
+                        applyNoDragGuards(container);
                         hydrateNodeUIFromData();
                         await new Promise((resolve) => requestAnimationFrame(resolve));
                         decorateAllPorts();
+                        applyNoDragGuards(container);
                     } catch (postLoadErr) {
                         console.warn('Post-load decoration/hydration failed:', postLoadErr);
                     }
@@ -1008,6 +927,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         await persistWorkflowStore(store);
                         window.editor.import(workflow.graph);
                         decorateAllPorts();
+                        applyNoDragGuards(container);
                         safeCreateIcons();
                     } catch (resetErr) {
                         console.error('Failed to recover workflow graph:', resetErr);
@@ -1018,6 +938,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const saveActiveWorkflow = async (store, showAlert = false) => {
                 const target = store.workflows.find(w => w.id === store.activeId);
                 if (!target) return false;
+
+                // Flush in-progress editor inputs before capturing node data.
+                const previewModalEl = document.getElementById('workflowTextPreviewModal');
+                const previewInputEl = document.getElementById('workflowTextPreviewInput');
+                const previewTargetEl = window.__workflowActivePreviewTextarea || null;
+                if (previewModalEl && !previewModalEl.classList.contains('hidden') && previewInputEl && previewTargetEl) {
+                    previewTargetEl.value = previewInputEl.value || '';
+                }
 
                 const graph = captureNodeUIIntoGraph(window.editor.export());
                 target.graph = graph;
@@ -1036,6 +964,39 @@ document.addEventListener('DOMContentLoaded', () => {
                 return true;
             };
 
+            const ensureActiveWorkflow = async () => {
+                if (workflowStore.activeId && workflowStore.workflows.find((w) => w.id === workflowStore.activeId)) {
+                    return true;
+                }
+                const suggested = `Workflow ${workflowStore.workflows.length + 1}`;
+                const name = prompt('New workflow name:', suggested);
+                if (name === null) return false;
+
+                const graph = captureNodeUIIntoGraph(window.editor.export());
+                const created = createWorkflowEntry((name || suggested).trim(), graph);
+                workflowStore.workflows.push(created);
+                workflowStore.activeId = created.id;
+                const saved = await persistWorkflowStore(workflowStore);
+                if (!saved) {
+                    const detail = lastWorkflowPersistError ? `\nReason: ${lastWorkflowPersistError}` : '';
+                    alert('Failed to create workflow on server.' + detail);
+                    return false;
+                }
+                renderWorkflowOptions(workflowStore);
+                return true;
+            };
+
+            const startBlankWorkflow = () => {
+                if (typeof window.editor.clear === 'function') {
+                    window.editor.clear();
+                }
+                window.editor.import(getEmptyWorkflowGraph());
+                decorateAllPorts();
+                applyNoDragGuards(container);
+                safeCreateIcons();
+                renderWorkflowOptions(workflowStore);
+            };
+
             let autosaveTimer = null;
             const scheduleWorkflowAutosave = (delayMs = 700) => {
                 if (!workflowStore || !workflowStore.activeId) return;
@@ -1048,20 +1009,41 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             let workflowStore = await readWorkflowStore();
-            await persistWorkflowStore(workflowStore);
+            renderWorkflowOptions(workflowStore);
+            const startupSuggested = `Workflow ${workflowStore.workflows.length + 1}`;
+            const startupCreated = createWorkflowEntry(startupSuggested, getEmptyWorkflowGraph());
+            workflowStore.workflows.push(startupCreated);
+            workflowStore.activeId = startupCreated.id;
+            const startupSaved = await persistWorkflowStore(workflowStore);
+            if (!startupSaved) {
+                const detail = lastWorkflowPersistError ? `\nReason: ${lastWorkflowPersistError}` : '';
+                alert('Failed to initialize new workflow on server.' + detail);
+            }
             renderWorkflowOptions(workflowStore);
             await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
 
             workflowSelect.onchange = async (e) => {
-                await saveActiveWorkflow(workflowStore, false);
-                workflowStore.activeId = e.target.value;
-                await persistWorkflowStore(workflowStore);
-                renderWorkflowOptions(workflowStore);
-                await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+                const selectedId = e.target.value;
+                if (!selectedId) return;
+                workflowStore.activeId = selectedId;
             };
 
+            if (loadWorkflowBtn) {
+                loadWorkflowBtn.onclick = async () => {
+                    const selectedId = workflowSelect.value;
+                    if (!selectedId) {
+                        alert('로드할 워크플로를 먼저 선택해 주세요.');
+                        return;
+                    }
+                    const latestStore = await readWorkflowStore();
+                    workflowStore = latestStore;
+                    workflowStore.activeId = selectedId;
+                    renderWorkflowOptions(workflowStore);
+                    await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
+                };
+            }
+
             newWorkflowBtn.onclick = async () => {
-                await saveActiveWorkflow(workflowStore, false);
                 const suggested = `Workflow ${workflowStore.workflows.length + 1}`;
                 const name = prompt('New workflow name:', suggested);
                 if (name === null) return;
@@ -1069,16 +1051,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 const created = createWorkflowEntry((name || suggested).trim(), getEmptyWorkflowGraph());
                 workflowStore.workflows.push(created);
                 workflowStore.activeId = created.id;
-                await persistWorkflowStore(workflowStore);
+                const saved = await persistWorkflowStore(workflowStore);
+                if (!saved) {
+                    const detail = lastWorkflowPersistError ? `\nReason: ${lastWorkflowPersistError}` : '';
+                    alert('Failed to create workflow on server.' + detail);
+                    return;
+                }
                 renderWorkflowOptions(workflowStore);
                 await loadWorkflowToEditor(workflowStore, workflowStore.activeId);
             };
 
             saveWorkflowBtn.onclick = async () => {
+                const ready = await ensureActiveWorkflow();
+                if (!ready) return;
                 await saveActiveWorkflow(workflowStore, true);
             };
 
             saveAsWorkflowBtn.onclick = async () => {
+                const ready = await ensureActiveWorkflow();
+                if (!ready) return;
                 await saveActiveWorkflow(workflowStore, false);
                 const base = workflowStore.workflows.find(w => w.id === workflowStore.activeId);
                 const suggested = base ? `${base.name} Copy` : `Workflow ${workflowStore.workflows.length + 1}`;
@@ -1095,7 +1086,51 @@ document.addEventListener('DOMContentLoaded', () => {
                 alert(`Saved as: ${created.name}`);
             };
 
+            if (renameWorkflowBtn) {
+                renameWorkflowBtn.onclick = async () => {
+                    const selectedId = workflowSelect.value || workflowStore.activeId;
+                    if (!selectedId) {
+                        alert('이름을 변경할 워크플로를 먼저 선택해 주세요.');
+                        return;
+                    }
+
+                    const target = workflowStore.workflows.find((w) => w.id === selectedId);
+                    if (!target) {
+                        alert('선택한 워크플로를 찾을 수 없습니다.');
+                        return;
+                    }
+
+                    const nextName = prompt('워크플로 이름 변경:', target.name || 'Untitled Workflow');
+                    if (nextName === null) return;
+
+                    const trimmed = nextName.trim();
+                    if (!trimmed) {
+                        alert('워크플로 이름은 비워둘 수 없습니다.');
+                        return;
+                    }
+
+                    target.name = trimmed;
+                    target.updatedAt = new Date().toISOString();
+                    workflowStore.updatedAt = target.updatedAt;
+                    workflowStore.activeId = target.id;
+
+                    const saved = await persistWorkflowStore(workflowStore);
+                    if (!saved) {
+                        const detail = lastWorkflowPersistError ? `\nReason: ${lastWorkflowPersistError}` : '';
+                        alert('Failed to rename workflow on server.' + detail);
+                        return;
+                    }
+
+                    renderWorkflowOptions(workflowStore);
+                    workflowSelect.value = target.id;
+                };
+            }
+
             deleteWorkflowBtn.onclick = async () => {
+                if (!workflowStore.activeId) {
+                    alert('삭제할 활성 워크플로가 없습니다. 먼저 Load 하세요.');
+                    return;
+                }
                 if (workflowStore.workflows.length <= 1) {
                     alert('At least one workflow must remain.');
                     return;
@@ -1128,6 +1163,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const openTextPreviewModal = (textareaEl) => {
                 if (!textPreviewModal || !textPreviewInput || !textareaEl) return;
                 activePreviewTextarea = textareaEl;
+                window.__workflowActivePreviewTextarea = textareaEl;
                 textPreviewInput.value = textareaEl.value || '';
                 textPreviewModal.classList.remove('hidden');
                 textPreviewInput.focus();
@@ -1142,6 +1178,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 textPreviewModal.classList.add('hidden');
                 if (activePreviewTextarea) activePreviewTextarea.focus();
                 activePreviewTextarea = null;
+                window.__workflowActivePreviewTextarea = null;
             };
 
             if (closeTextPreviewBtn) {
@@ -1182,6 +1219,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (window.__workflowMouseupHandler) {
                 window.removeEventListener('mouseup', window.__workflowMouseupHandler);
             }
+            let textInteractionLock = false;
+            let previousEditorMode = 'edit';
 
             window.__workflowKeydownHandler = (evt) => {
                 if (evt.code !== 'Space') return;
@@ -1363,6 +1402,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch (err) {
                     console.warn('decorateAllPorts skipped due to editor state:', err);
                 }
+            };
+
+            const applyNoDragGuards = (rootEl = container) => {
+                if (!rootEl) return;
+                const selector = [
+                    '.drawflow-node textarea',
+                    '.drawflow-node input',
+                    '.drawflow-node select',
+                    '.drawflow-node button',
+                    '.drawflow-node .node-text-toolbar',
+                    '.drawflow-node .node-text-color-palette',
+                    '.drawflow-node .node-generator-options-panel'
+                ].join(', ');
+                rootEl.querySelectorAll(selector).forEach((el) => {
+                    el.classList.add('nodrag');
+                });
             };
 
             const HEADING_STYLE_MAP = {
@@ -1560,6 +1615,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 hideOverlay();
                 hideContextMenu();
                 safeCreateIcons();
+                applyNoDragGuards(container);
                 scheduleWorkflowAutosave();
             };
 
@@ -1593,6 +1649,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 hideOverlay();
                 hideContextMenu();
                 safeCreateIcons();
+                applyNoDragGuards(container);
                 scheduleWorkflowAutosave();
             };
 
@@ -1625,6 +1682,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 hideOverlay();
                 hideContextMenu();
                 safeCreateIcons();
+                applyNoDragGuards(container);
                 scheduleWorkflowAutosave();
             };
 
@@ -1737,6 +1795,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 hideOverlay();
                 hideContextMenu();
                 safeCreateIcons();
+                applyNoDragGuards(container);
                 scheduleWorkflowAutosave();
             };
 
@@ -1765,6 +1824,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 hideOverlay();
                 hideContextMenu();
                 safeCreateIcons();
+                applyNoDragGuards(container);
                 scheduleWorkflowAutosave();
             };
 
@@ -1845,10 +1905,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
             container.addEventListener('mousedown', (e) => {
                 const targetEl = (e.target && typeof e.target.closest === 'function') ? e.target : null;
-                const textInteractive = targetEl ? targetEl.closest('.node-input-text, .node-text-toolbar, .node-text-color-palette, .node-heading-select, .node-text-color-btn') : null;
+                const textInteractive = targetEl ? targetEl.closest(
+                    '.drawflow-node textarea, .drawflow-node input, .drawflow-node select, .drawflow-node button, .node-text-toolbar, .node-text-color-palette'
+                ) : null;
                 if (textInteractive && !isSpacePanning) {
                     const nodeEl = targetEl.closest('.drawflow-node');
                     selectNodeElement(nodeEl);
+                    if (window.editor && !textInteractionLock) {
+                        previousEditorMode = window.editor.editor_mode || 'edit';
+                        window.editor.editor_mode = 'fixed';
+                        textInteractionLock = true;
+                    }
                     return;
                 }
 
@@ -1895,6 +1962,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     scheduleWorkflowAutosave();
                 }
                 activeResize = null;
+                if (textInteractionLock && window.editor) {
+                    window.editor.editor_mode = previousEditorMode || 'edit';
+                    textInteractionLock = false;
+                }
             });
 
             container.addEventListener('click', (e) => {
@@ -2075,7 +2146,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                         refImgs.push(localRefPreview.src);
                                     }
 
-                                    // Agent + Text + upstream text瑜??⑹꽦??理쒖쥌 ?꾨＼?꾪듃
+                                    // Build final prompt from agent, local, and upstream text inputs.
                                     const combinedPrompt = [agentPrompt, localPrompt, refTexts.join('\n')].filter(Boolean).join('\n\n');
                                     const imageCount = Math.max(1, Math.min(8, Number(countEl ? countEl.value : 1) || 1));
                                     const style = styleEl ? styleEl.value : 'auto';
