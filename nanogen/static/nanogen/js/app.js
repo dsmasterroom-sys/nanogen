@@ -576,6 +576,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             window.editor = new Drawflow(container);
             window.editor.start();
+            // Keep default Drawflow canvas sizing to avoid hit-test/select issues.
+            window.editor.zoom_min = 0.2;
+            window.editor.zoom_max = 2;
 
             const workflowSelect = document.getElementById('workflowSelect');
             const newWorkflowBtn = document.getElementById('newWorkflowBtn');
@@ -1453,7 +1456,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const incrementSpawn = () => {
                 spawnX += 30;
                 spawnY += 30;
-                if (spawnX > 600) { spawnX = 150; spawnY = 200; }
+                if (spawnX > 3000) { spawnX = 150; spawnY = 200; }
             };
 
             const PORT_LABEL_MAP = {
@@ -1642,9 +1645,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const modelOptions = {
                     image: [
                         { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Image' },
-                        { value: 'gemini-2.5-flash-image-preview', label: 'Gemini 2.5 Flash Image' }
+                        { value: 'gemini-2.0-flash-preview-image-generation', label: 'Gemini 2.0 Flash Image' }
                     ],
                     prompt: [
+                        { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro (Prompt)' },
+                        { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Prompt)' },
                         { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Prompt)' },
                         { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (Prompt)' }
                     ],
@@ -2317,7 +2322,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const runWorkflowPipeline = async (targetNodeId = null) => {
                 await saveActiveWorkflow(workflowStore, false);
-                const exportData = window.editor.export();
+                // Use captured UI state for execution so node-run cache decisions
+                // reflect the latest in-node edits before running.
+                const exportData = captureNodeUIIntoGraph(window.editor.export());
                 const nodes = exportData.drawflow.Home.data;
                 const nodeKeys = Object.keys(nodes);
 
@@ -2434,8 +2441,13 @@ document.addEventListener('DOMContentLoaded', () => {
                                         throw new Error("Image node requires an uploaded image.");
                                     }
                                 } else if (node.name === 'video_input') {
-                                    nodeResults[id] = 'video_placeholder_data';
-                                    resultUrl = 'done';
+                                    const videoEl = dom.querySelector('.node-video-preview');
+                                    if (videoEl && videoEl.src && videoEl.src !== window.location.href) {
+                                        nodeResults[id] = videoEl.src;
+                                        resultUrl = 'done';
+                                    } else {
+                                        throw new Error("Video node requires an uploaded video.");
+                                    }
                                 }
                                 // 2) Handle Generators (Unified + backward compatible old node names)
                                 else if (node.name === 'generator' || node.name === 'prompt_gen' || node.name === 'image_gen' || node.name === 'video_gen' || node.name === 'base_gen' || node.name === 'modifier') {
@@ -2470,7 +2482,12 @@ document.addEventListener('DOMContentLoaded', () => {
                                     }
 
                                     // Build final prompt from agent, local, and upstream text inputs.
-                                    const combinedPrompt = [agentPrompt, localPrompt, refTexts.join('\n')].filter(Boolean).join('\n\n');
+                                    const combinedPrompt = [
+                                        agentPrompt ? `[AGENT INSTRUCTION]\n${agentPrompt}` : '',
+                                        localPrompt ? `[NODE PROMPT]\n${localPrompt}` : '',
+                                        refTexts.length ? `[UPSTREAM TEXT INPUTS]\n${refTexts.join('\n')}` : ''
+                                    ].filter(Boolean).join('\n\n');
+                                    const subjectPrompt = localPrompt;
                                     const imageCount = Math.max(1, Math.min(8, Number(countEl ? countEl.value : 1) || 1));
                                     const style = styleEl ? styleEl.value : 'auto';
                                     const aspectRatio = ratioEl ? ratioEl.value : '16:9';
@@ -2480,12 +2497,21 @@ document.addEventListener('DOMContentLoaded', () => {
                                     if (!combinedPrompt && (outputType === 'image' || outputType === 'prompt' || outputType === 'video')) {
                                         throw new Error("Generator requires text input (Agent Prompt, Text Prompt, or upstream text).");
                                     }
+                                    if (outputType === 'prompt' && !localPrompt) {
+                                        throw new Error("Prompt Assistant requires prompt text written in its node.");
+                                    }
 
                                     if (outputType === 'prompt') {
                                         const reqBody = {
-                                            subject: combinedPrompt,
+                                            // Prompt Assistant rule:
+                                            // - Main: node-authored prompt (localPrompt)
+                                            // - References: upstream text/image inputs
+                                            subject: subjectPrompt,
                                             presets: refTexts,
                                             referenceImages: refImgs,
+                                            agentInstruction: agentPrompt,
+                                            primaryPrompt: localPrompt,
+                                            secondaryText: refTexts.join('\n'),
                                             config: {
                                                 modelId: modelSelect ? modelSelect.value : 'gemini-2.5-flash',
                                                 aspectRatio,
@@ -2502,6 +2528,12 @@ document.addEventListener('DOMContentLoaded', () => {
                                         if (data.prompt) {
                                             resultUrl = formatAgentResultText(data.prompt, agentOutputFormat);
                                             nodeResults[id] = resultUrl;
+                                            node.data = node.data || {};
+                                            node.data.generatedImageUrls = [];
+                                            node.data.generatedVideoUrl = '';
+                                            node.data.generatedTextResult = resultUrl;
+                                            node.data.resultType = 'text';
+                                            node.data.statusText = 'Completed';
                                             if (resultContainer) {
                                                 resultContainer.innerHTML = `<textarea class="node-result-text w-full h-full bg-transparent px-4 pt-14 pb-14 text-sm text-zinc-100 outline-none resize-none custom-scrollbar">${resultUrl}</textarea>`;
                                                 setGeneratorView(dom, 'result');
@@ -2544,6 +2576,12 @@ document.addEventListener('DOMContentLoaded', () => {
                                         if (urls.length > 0) {
                                             resultUrl = urls[0];
                                             nodeResults[id] = resultUrl;
+                                            node.data = node.data || {};
+                                            node.data.generatedImageUrls = urls;
+                                            node.data.generatedVideoUrl = '';
+                                            node.data.generatedTextResult = '';
+                                            node.data.resultType = 'image';
+                                            node.data.statusText = 'Completed';
                                             if (resultContainer) {
                                                 if (urls.length === 1) {
                                                     resultContainer.innerHTML = `<img src="${urls[0]}" class="w-full h-auto object-cover border border-zinc-700/50 rounded cursor-pointer hover:opacity-90 transition-opacity" onclick="window.openImageModal(this.src, '')">`;
@@ -2582,6 +2620,12 @@ document.addEventListener('DOMContentLoaded', () => {
                                         }
                                         resultUrl = data.url;
                                         nodeResults[id] = resultUrl;
+                                        node.data = node.data || {};
+                                        node.data.generatedImageUrls = [];
+                                        node.data.generatedVideoUrl = resultUrl;
+                                        node.data.generatedTextResult = '';
+                                        node.data.resultType = 'video';
+                                        node.data.statusText = 'Completed';
                                         if (resultContainer) {
                                             resultContainer.innerHTML = `<video src="${resultUrl}" class="w-full h-auto object-cover border border-zinc-700/50 rounded bg-black" controls playsinline></video>`;
                                             resultContainer.classList.remove('hidden');

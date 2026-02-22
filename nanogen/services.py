@@ -72,6 +72,12 @@ def generate_image_with_gemini(prompt, config, reference_images=None, mask_image
     env_model_id = os.environ.get('IMAGE_MODEL_ID', 'gemini-3-pro-image-preview')
     requested_model_id = config.get('modelId') if config.get('modelId') else env_model_id
     model_id = requested_model_id
+
+    # Normalize deprecated/invalid image model IDs from older saved workflows.
+    deprecated_model_aliases = {
+        'gemini-2.5-flash-image-preview': 'gemini-2.0-flash-preview-image-generation',
+    }
+    model_id = deprecated_model_aliases.get(model_id, model_id)
     
     # Strict override: Since user's API key lacks 'imagen' billing permissions, 
     # force any lingering 'imagen-3.0' requests (e.g. from cached nodes) to use gemini-3-pro
@@ -173,27 +179,34 @@ def generate_image_with_gemini(prompt, config, reference_images=None, mask_image
     # Execute generation with retries/fallbacks for text-only responses.
     try:
         strict_suffix = "\n\n[OUTPUT FORMAT]\nGenerate an image only. Do not return explanatory text."
-        fallback_model = os.environ.get('IMAGE_FALLBACK_MODEL', 'gemini-2.5-flash-image-preview')
+        fallback_model = os.environ.get('IMAGE_FALLBACK_MODEL', 'gemini-2.0-flash-preview-image-generation')
         model_candidates = [model_id]
         if fallback_model and fallback_model not in model_candidates:
             model_candidates.append(fallback_model)
+        if 'gemini-2.0-flash-preview-image-generation' not in model_candidates:
+            model_candidates.append('gemini-2.0-flash-preview-image-generation')
         if 'gemini-3-pro-image-preview' not in model_candidates:
             model_candidates.append('gemini-3-pro-image-preview')
 
         last_text_parts = []
         for candidate_model in model_candidates:
-            image_uri, text_parts = call_image_model(candidate_model, final_prompt)
-            if image_uri:
-                return image_uri
-            last_text_parts = text_parts or last_text_parts
-
-            # Retry once with a strict image-only instruction if text-only answer came back.
-            if text_parts:
-                image_uri, text_parts_retry = call_image_model(candidate_model, f"{final_prompt}{strict_suffix}")
+            try:
+                image_uri, text_parts = call_image_model(candidate_model, final_prompt)
                 if image_uri:
                     return image_uri
-                if text_parts_retry:
-                    last_text_parts = text_parts_retry
+                last_text_parts = text_parts or last_text_parts
+
+                # Retry once with a strict image-only instruction if text-only answer came back.
+                if text_parts:
+                    image_uri, text_parts_retry = call_image_model(candidate_model, f"{final_prompt}{strict_suffix}")
+                    if image_uri:
+                        return image_uri
+                    if text_parts_retry:
+                        last_text_parts = text_parts_retry
+            except Exception as candidate_err:
+                # Try next candidate model instead of hard-failing on first 404/unsupported model.
+                print(f"Image model failed ({candidate_model}): {candidate_err}")
+                continue
 
         if last_text_parts:
             sample = last_text_parts[0][:180]
@@ -345,6 +358,9 @@ def generate_midjourney_prompt(data):
     presets = ", ".join(data.get('presets', []))
     config = data.get('config', {})
     media_type = data.get('media_type', 'image')
+    agent_instruction = (data.get('agentInstruction') or data.get('agent_instruction') or '').strip()
+    primary_prompt = (data.get('primaryPrompt') or data.get('primary_prompt') or '').strip()
+    secondary_text = (data.get('secondaryText') or data.get('secondary_text') or '').strip()
     
     resolution = config.get('resolution', '')
     ar = config.get('aspectRatio', '')
@@ -382,10 +398,43 @@ def generate_midjourney_prompt(data):
         6. Ensure the 'User Concept' takes priority for the narrative/subject, while blending in 'Presets' seamlessly.
         """
 
+    if agent_instruction:
+        system_instruction = f"""{system_instruction}
+
+        Primary Agent Instruction (highest priority):
+        {agent_instruction}
+
+        You MUST follow the primary agent instruction strictly while generating the final prompt text.
+        """
+
+    if primary_prompt:
+        system_instruction = f"""{system_instruction}
+
+        Priority Rules (STRICT ORDER):
+        1) PRIORITY-1 PRIMARY PROMPT is mandatory and dominant.
+        2) PRIORITY-2 Secondary text inputs and reference images are supportive only.
+        3) Do not weaken, replace, or contradict any constraint in PRIORITY-1.
+        4) Preserve camera/lens/style/negative constraints from PRIORITY-1.
+        5) Only add missing details from PRIORITY-2 when they do not conflict.
+        """
+
     user_message = f"""
+    PRIORITY-1 PRIMARY PROMPT:
+    {primary_prompt if primary_prompt else '(none)'}
+
+    PRIORITY-2 SECONDARY TEXT INPUTS:
+    {secondary_text if secondary_text else '(none)'}
+
     User Concept: {subject if subject else 'Synthesize a creative scene based on the attached images.'}
     Presets (Styles/Keywords): {presets}
     Target Resolution: {resolution}
+    """
+
+    if primary_prompt:
+        user_message += """
+    IMPORTANT:
+    Treat PRIORITY-2 text and reference images as supporting context only.
+    Do not replace the core intent of PRIORITY-1.
     """
     
     # Text part must be appended as well
@@ -405,12 +454,13 @@ def generate_midjourney_prompt(data):
         last_error = None
         for model_id in candidate_models:
             try:
+                temperature = 0.25 if primary_prompt else 0.7
                 response = client.models.generate_content(
                     model=model_id,
                     contents=[types.Content(parts=parts)],
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
-                        temperature=0.7
+                        temperature=temperature
                     )
                 )
                 if response and getattr(response, "text", None):
@@ -426,7 +476,14 @@ def generate_midjourney_prompt(data):
             raise ValueError("Prompt generation failed: no response text from candidate models.")
 
         generated_text = response.text.replace('\n', ' ').strip()
-        
+
+        # Enforce Priority-1 presence so user-authored agent prompt is never dropped.
+        if primary_prompt:
+            base_head = primary_prompt[:80].strip().lower()
+            out_lower = generated_text.lower()
+            if base_head and base_head not in out_lower:
+                generated_text = f"{primary_prompt.strip()} {generated_text}".strip()
+
         if media_type == 'image':
             # Post-Processing: Append AR from config only for image mode
             if ar and "--ar" not in generated_text:
