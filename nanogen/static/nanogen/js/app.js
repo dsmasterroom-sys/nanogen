@@ -734,13 +734,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (data.nodeWidth || data.nodeHeight) applyNodeSize(dom, data.nodeWidth, data.nodeHeight);
                     } else if (node.name === 'generator' || node.name === 'prompt_gen' || node.name === 'image_gen' || node.name === 'video_gen' || node.name === 'base_gen' || node.name === 'modifier') {
                         const outputTypeEl = dom.querySelector('.node-output-type');
+                        const kindEl = dom.querySelector('.node-generator-kind');
                         const modelEl = dom.querySelector('.node-input-model');
                         const agentPromptEl = dom.querySelector('.node-agent-prompt');
+                        const agentOutputFormatEl = dom.querySelector('.node-agent-output-format');
                         const textPromptEl = dom.querySelector('.node-input-prompt') || dom.querySelector('.node-gen-prompt');
                         const qtyEl = dom.querySelector('.node-gen-count');
                         const styleEl = dom.querySelector('.node-gen-style');
                         const ratioEl = dom.querySelector('.node-gen-ratio');
                         const resolutionEl = dom.querySelector('.node-gen-resolution');
+                        const durationEl = dom.querySelector('.node-gen-duration');
                         const refPreviewEl = dom.querySelector('.node-generator-reference-preview');
                         const refRemoveEl = dom.querySelector('.node-generator-reference-remove');
                         const resultContainer = dom.querySelector('.node-result-container');
@@ -750,18 +753,24 @@ document.addEventListener('DOMContentLoaded', () => {
                             resultContainer.classList.remove('absolute', 'inset-0', 'p-2');
                             resultContainer.classList.add('h-full', 'overflow-hidden');
                         }
-                        if (outputTypeEl && data.outputType) outputTypeEl.value = data.outputType;
+                        const legacyOutputType = data.outputType || (node.name === 'prompt_gen' ? 'prompt' : (node.name === 'video_gen' ? 'video' : 'image'));
+                        const inferredKind = normalizeGeneratorKind(data.generatorKind, legacyOutputType);
+                        dom.dataset.generatorKind = inferredKind;
+                        if (kindEl) kindEl.value = inferredKind;
+                        if (outputTypeEl) outputTypeEl.value = getOutputTypeForGeneratorKind(inferredKind);
                         syncGeneratorModelOptions(dom);
                         if (modelEl && data.modelId) modelEl.value = data.modelId;
                         if (modelEl && !modelEl.value) {
-                            modelEl.value = getModelOptionsForOutputType(outputTypeEl ? outputTypeEl.value : 'image')[0]?.value || '';
+                            modelEl.value = getModelOptionsForOutputType(getOutputTypeForGeneratorKind(inferredKind))[0]?.value || '';
                         }
                         if (agentPromptEl) agentPromptEl.value = data.agentPrompt || '';
+                        if (agentOutputFormatEl) agentOutputFormatEl.value = data.agentOutputFormat || 'text';
                         if (textPromptEl) textPromptEl.value = data.textPrompt || '';
                         if (qtyEl) qtyEl.value = String(data.count || 1);
                         if (styleEl && data.style) styleEl.value = data.style;
                         if (ratioEl && data.aspectRatio) ratioEl.value = data.aspectRatio;
                         if (resolutionEl && data.resolution) resolutionEl.value = data.resolution;
+                        if (durationEl) durationEl.value = String(Math.max(4, Math.min(8, Number(data.durationSeconds || 8))));
                         if (refPreviewEl && data.localReferenceImage) {
                             refPreviewEl.src = data.localReferenceImage;
                             refPreviewEl.classList.remove('hidden');
@@ -839,24 +848,35 @@ document.addEventListener('DOMContentLoaded', () => {
                         data.videoUrl = (videoEl && videoEl.src && videoEl.src !== window.location.href) ? videoEl.src : '';
                     } else if (node.name === 'generator' || node.name === 'prompt_gen' || node.name === 'image_gen' || node.name === 'video_gen' || node.name === 'base_gen' || node.name === 'modifier') {
                         const outputTypeEl = dom.querySelector('.node-output-type');
+                        const kindEl = dom.querySelector('.node-generator-kind');
                         const modelEl = dom.querySelector('.node-input-model');
                         const agentPromptEl = dom.querySelector('.node-agent-prompt');
+                        const agentOutputFormatEl = dom.querySelector('.node-agent-output-format');
                         const textPromptEl = dom.querySelector('.node-input-prompt') || dom.querySelector('.node-gen-prompt');
                         const qtyEl = dom.querySelector('.node-gen-count');
                         const styleEl = dom.querySelector('.node-gen-style');
                         const ratioEl = dom.querySelector('.node-gen-ratio');
                         const resolutionEl = dom.querySelector('.node-gen-resolution');
+                        const durationEl = dom.querySelector('.node-gen-duration');
                         const refPreviewEl = dom.querySelector('.node-generator-reference-preview');
                         const resultContainer = dom.querySelector('.node-result-container');
                         const statusEl = dom.querySelector('.NodeStatusStatus');
-                        data.outputType = outputTypeEl ? outputTypeEl.value : data.outputType;
+                        const legacyOutputType = outputTypeEl ? outputTypeEl.value : (data.outputType || 'image');
+                        const generatorKind = normalizeGeneratorKind(
+                            kindEl ? kindEl.value : (dom.dataset.generatorKind || data.generatorKind),
+                            legacyOutputType
+                        );
+                        data.generatorKind = generatorKind;
+                        data.outputType = getOutputTypeForGeneratorKind(generatorKind);
                         data.modelId = modelEl ? modelEl.value : data.modelId;
                         data.agentPrompt = agentPromptEl ? agentPromptEl.value : '';
+                        data.agentOutputFormat = agentOutputFormatEl ? agentOutputFormatEl.value : (data.agentOutputFormat || 'text');
                         data.textPrompt = textPromptEl ? textPromptEl.value : '';
                         data.count = qtyEl ? Number(qtyEl.value || 1) : 1;
                         data.style = styleEl ? styleEl.value : 'auto';
                         data.aspectRatio = ratioEl ? ratioEl.value : '16:9';
                         data.resolution = resolutionEl ? resolutionEl.value : '1K';
+                        data.durationSeconds = durationEl ? Math.max(4, Math.min(8, Number(durationEl.value || 8))) : (data.durationSeconds || 8);
                         data.localReferenceImage = (refPreviewEl && refPreviewEl.src && refPreviewEl.src !== window.location.href) ? refPreviewEl.src : '';
                         data.statusText = statusEl ? statusEl.textContent : 'Waiting...';
                         data.generatorView = dom.dataset.generatorView || 'prompt';
@@ -1638,6 +1658,53 @@ document.addEventListener('DOMContentLoaded', () => {
                 return modelOptions.image;
             }
 
+            function normalizeGeneratorKind(kind, fallbackOutputType = 'image') {
+                if (kind === 'agent' || kind === 'image' || kind === 'video') return kind;
+                if (fallbackOutputType === 'prompt') return 'agent';
+                if (fallbackOutputType === 'video') return 'video';
+                return 'image';
+            }
+
+            function getOutputTypeForGeneratorKind(kind) {
+                if (kind === 'agent') return 'prompt';
+                if (kind === 'video') return 'video';
+                return 'image';
+            }
+
+            function getGeneratorUIConfig(kind) {
+                if (kind === 'agent') {
+                    return {
+                        icon: 'bot',
+                        iconColor: 'text-emerald-400',
+                        borderClass: 'border-emerald-500/80',
+                        title: 'Prompt Agent',
+                        placeholder: 'Write your prompt or instructions...',
+                        optionsTitle: 'Prompt Agent Options',
+                        promptOnly: true
+                    };
+                }
+                if (kind === 'video') {
+                    return {
+                        icon: 'clapperboard',
+                        iconColor: 'text-violet-400',
+                        borderClass: 'border-violet-500/80',
+                        title: 'Video Generator',
+                        placeholder: 'Describe the video you want to generate...',
+                        optionsTitle: 'Video Generator Options',
+                        promptOnly: false
+                    };
+                }
+                return {
+                    icon: 'image-plus',
+                    iconColor: 'text-blue-400',
+                    borderClass: 'border-blue-500/80',
+                    title: 'Image Generator',
+                    placeholder: 'Describe the image you want to generate...',
+                    optionsTitle: 'Image Generator Options',
+                    promptOnly: false
+                };
+            }
+
             function buildModelOptionsHtml(outputType, selectedModel) {
                 const options = getModelOptionsForOutputType(outputType);
                 const fallbackValue = options[0]?.value || '';
@@ -1653,6 +1720,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 const outputType = outputTypeEl.value || 'image';
                 const previous = modelEl.value;
                 modelEl.innerHTML = buildModelOptionsHtml(outputType, previous);
+            }
+
+            function formatAgentResultText(rawText, outputFormat) {
+                const text = String(rawText || '');
+                if ((outputFormat || 'text') !== 'list') return text;
+                const lines = text
+                    .split('\n')
+                    .map((line) => line.trim())
+                    .filter(Boolean);
+                return lines.map((line) => (line.startsWith('- ') ? line : `- ${line}`)).join('\n');
             }
 
             function setGeneratorView(nodeEl, view) {
@@ -1826,7 +1903,9 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             const addGeneratorNode = (x = spawnX + 250, y = spawnY, defaults = {}) => {
-                const selectedType = defaults.outputType || 'image';
+                const legacyOutputType = defaults.outputType || 'image';
+                const generatorKind = normalizeGeneratorKind(defaults.generatorKind, legacyOutputType);
+                const selectedType = getOutputTypeForGeneratorKind(generatorKind);
                 const selectedModel = defaults.modelId || getModelOptionsForOutputType(selectedType)[0]?.value || 'gemini-3-pro-image-preview';
                 const agentPrompt = defaults.agentPrompt || '';
                 const textPrompt = defaults.textPrompt || '';
@@ -1834,35 +1913,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 const style = defaults.style || 'auto';
                 const ratio = defaults.aspectRatio || '16:9';
                 const resolution = defaults.resolution || '1K';
-                const html = `
-                    <div>
-                        <div class="node-card p-0">
-                            <div class="title-box border-b border-zinc-700 pb-2 mb-0 flex items-center gap-2">
-                                <i data-lucide="image-plus" class="w-4 h-4 text-blue-400"></i>
-                                <span>Image Generator</span>
-                                <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
-                                    <i data-lucide="play" class="w-3.5 h-3.5"></i>
-                                </button>
-                            </div>
-                            <div class="box pt-2">
-                                <textarea class="hidden node-agent-prompt">${agentPrompt}</textarea>
-
-                                <div class="node-generator-stage node-surface relative mb-3 min-h-[200px] border border-blue-500/80 rounded-2xl bg-[#17181b] overflow-hidden">
-                                    <div class="absolute top-2 left-2 z-20 flex items-center gap-1 rounded-lg bg-zinc-900/90 border border-zinc-700 px-1.5 py-1">
-                                        <button type="button" class="node-view-toggle-btn w-7 h-7 rounded-md bg-zinc-700 text-zinc-100 flex items-center justify-center" data-view="prompt" title="Prompt View">
-                                            <i data-lucide="pen-line" class="w-3.5 h-3.5"></i>
-                                        </button>
-                                        <button type="button" class="node-view-toggle-btn w-7 h-7 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/70 flex items-center justify-center" data-view="result" title="Result View">
-                                            <i data-lucide="layout-panel-top" class="w-3.5 h-3.5"></i>
-                                        </button>
+                const durationSeconds = Math.max(4, Math.min(8, Number(defaults.durationSeconds || 8)));
+                const agentOutputFormat = defaults.agentOutputFormat || 'text';
+                const ui = getGeneratorUIConfig(generatorKind);
+                const bottomControlsHtml = ui.promptOnly ? `
+                                    <div class="absolute left-3 bottom-3 flex items-center gap-2">
+                                        <span class="px-3 py-1.5 rounded-full bg-zinc-800/95 border border-zinc-700 text-xs text-zinc-300">Agent</span>
                                     </div>
-                                    <div class="node-result-container hidden h-full overflow-hidden"></div>
-                                    <img class="node-generator-reference-preview hidden absolute inset-0 w-full h-full object-cover opacity-45">
-                                    <button type="button" class="node-generator-reference-remove hidden absolute top-2 right-2 p-1.5 bg-black/60 rounded-full text-red-300 hover:text-red-200">
-                                        <i data-lucide="x" class="w-3.5 h-3.5"></i>
-                                    </button>
-                                    <textarea class="node-gen-prompt w-full h-full bg-transparent px-4 pt-14 pb-14 text-sm text-zinc-100 outline-none resize-none custom-scrollbar" placeholder="Describe the image you want to generate...">${textPrompt}</textarea>
-
+                ` : `
                                     <div class="absolute left-3 bottom-3 flex items-center gap-2">
                                         <div class="flex items-center rounded-full bg-zinc-800/95 border border-zinc-700 px-1 py-1">
                                             <button type="button" class="node-gen-count-dec w-6 h-6 rounded-full text-zinc-300 hover:bg-zinc-700">-</button>
@@ -1885,7 +1943,55 @@ document.addEventListener('DOMContentLoaded', () => {
                                             <option value="2K" ${resolution === '2K' ? 'selected' : ''}>2K</option>
                                             <option value="4K" ${resolution === '4K' ? 'selected' : ''}>4K</option>
                                         </select>
+                                        ${generatorKind === 'video' ? `
+                                        <select class="node-gen-duration bg-zinc-800/95 border border-zinc-700 rounded-full px-3 py-1.5 text-xs text-zinc-200 outline-none">
+                                            <option value="4" ${durationSeconds === 4 ? 'selected' : ''}>4s</option>
+                                            <option value="5" ${durationSeconds === 5 ? 'selected' : ''}>5s</option>
+                                            <option value="6" ${durationSeconds === 6 ? 'selected' : ''}>6s</option>
+                                            <option value="7" ${durationSeconds === 7 ? 'selected' : ''}>7s</option>
+                                            <option value="8" ${durationSeconds === 8 ? 'selected' : ''}>8s</option>
+                                        </select>` : ''}
                                     </div>
+                `;
+                const optionsExtraHtml = generatorKind === 'agent' ? `
+                                    <label class="text-[11px] text-zinc-300">Result
+                                        <select class="node-agent-output-format mt-1 w-full bg-black/40 border border-zinc-700 rounded p-1.5 text-xs text-zinc-300 outline-none">
+                                            <option value="text" ${agentOutputFormat === 'text' ? 'selected' : ''}>Text</option>
+                                            <option value="list" ${agentOutputFormat === 'list' ? 'selected' : ''}>List</option>
+                                        </select>
+                                    </label>
+                ` : '';
+                const html = `
+                    <div>
+                        <div class="node-card p-0">
+                            <div class="title-box border-b border-zinc-700 pb-2 mb-0 flex items-center gap-2">
+                                <i data-lucide="${ui.icon}" class="w-4 h-4 ${ui.iconColor}"></i>
+                                <span>${ui.title}</span>
+                                <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
+                                    <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                                </button>
+                            </div>
+                            <div class="box pt-2">
+                                <textarea class="hidden node-agent-prompt">${agentPrompt}</textarea>
+                                <input type="hidden" class="node-output-type" value="${selectedType}">
+                                <input type="hidden" class="node-generator-kind" value="${generatorKind}">
+
+                                <div class="node-generator-stage node-surface relative mb-3 min-h-[200px] border ${ui.borderClass} rounded-2xl bg-[#17181b] overflow-hidden">
+                                    <div class="absolute top-2 left-2 z-20 flex items-center gap-1 rounded-lg bg-zinc-900/90 border border-zinc-700 px-1.5 py-1">
+                                        <button type="button" class="node-view-toggle-btn w-7 h-7 rounded-md bg-zinc-700 text-zinc-100 flex items-center justify-center" data-view="prompt" title="Prompt View">
+                                            <i data-lucide="pen-line" class="w-3.5 h-3.5"></i>
+                                        </button>
+                                        <button type="button" class="node-view-toggle-btn w-7 h-7 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/70 flex items-center justify-center" data-view="result" title="Result View">
+                                            <i data-lucide="layout-panel-top" class="w-3.5 h-3.5"></i>
+                                        </button>
+                                    </div>
+                                    <div class="node-result-container hidden h-full overflow-hidden"></div>
+                                    <img class="node-generator-reference-preview hidden absolute inset-0 w-full h-full object-cover opacity-45">
+                                    <button type="button" class="node-generator-reference-remove hidden absolute top-2 right-2 p-1.5 bg-black/60 rounded-full text-red-300 hover:text-red-200">
+                                        <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                                    </button>
+                                    <textarea class="node-gen-prompt w-full h-full bg-transparent px-4 pt-14 pb-14 text-sm text-zinc-100 outline-none resize-none custom-scrollbar" placeholder="${ui.placeholder}">${textPrompt}</textarea>
+                                    ${bottomControlsHtml}
 
                                     <button type="button" class="node-generator-options-toggle absolute right-3 bottom-3 w-9 h-9 rounded-full bg-zinc-100 text-black flex items-center justify-center">
                                         <i data-lucide="settings-2" class="w-4 h-4"></i>
@@ -1893,20 +1999,14 @@ document.addEventListener('DOMContentLoaded', () => {
                                 </div>
 
                                 <div class="node-generator-options-panel hidden bg-zinc-900/80 border border-zinc-700 rounded-xl p-3 space-y-2 mb-2">
-                                    <div class="text-[10px] uppercase tracking-wider text-zinc-500">Image Generator Options</div>
+                                    <div class="text-[10px] uppercase tracking-wider text-zinc-500">${ui.optionsTitle}</div>
                                     <div class="grid grid-cols-2 gap-2">
                                         <label class="text-[11px] text-zinc-300">Model
                                             <select class="node-input-model mt-1 w-full bg-black/40 border border-zinc-700 rounded p-1.5 text-xs text-zinc-300 outline-none">
                                                 ${buildModelOptionsHtml(selectedType, selectedModel)}
                                             </select>
                                         </label>
-                                        <label class="text-[11px] text-zinc-300">Output
-                                            <select class="node-output-type mt-1 w-full bg-black/40 border border-zinc-700 rounded p-1.5 text-xs text-zinc-300 outline-none">
-                                                <option value="image" ${selectedType === 'image' ? 'selected' : ''}>Image</option>
-                                                <option value="prompt" ${selectedType === 'prompt' ? 'selected' : ''}>Prompt</option>
-                                                <option value="video" ${selectedType === 'video' ? 'selected' : ''}>Video</option>
-                                            </select>
-                                        </label>
+                                        ${optionsExtraHtml}
                                     </div>
                                 </div>
 
@@ -1916,10 +2016,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 `;
                 const generatorNodeId = window.editor.addNode('generator', 2, 1, x, y, 'generator', {
+                    generatorKind,
                     outputType: selectedType,
                     modelId: selectedModel,
                     agentPrompt,
                     textPrompt,
+                    durationSeconds,
+                    agentOutputFormat,
                     generatorView: defaults.generatorView || 'prompt',
                     nodeWidth: 620,
                     nodeHeight: 520
@@ -1927,6 +2030,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 decorateNodePorts(generatorNodeId, 'generator');
                 ensureNodeResizeHandle(generatorNodeId);
                 const generatorNodeEl = document.getElementById(`node-${generatorNodeId}`);
+                if (generatorNodeEl) generatorNodeEl.dataset.generatorKind = generatorKind;
                 syncGeneratorModelOptions(generatorNodeEl);
                 setGeneratorView(generatorNodeEl, defaults.generatorView || 'prompt');
                 applyNodeSize(generatorNodeEl, 620, 520);
@@ -1971,7 +2075,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('addNodeTextInputBtn').addEventListener('click', () => addTextInputNode());
             document.getElementById('addNodeImageInputBtn').addEventListener('click', () => addImageInputNode());
             document.getElementById('addNodeVideoInputBtn').addEventListener('click', () => addVideoInputNode());
-            document.getElementById('addNodeGeneratorBtn').addEventListener('click', () => addGeneratorNode());
+            document.getElementById('addNodeGeneratorBtn').addEventListener('click', () => addGeneratorNode(undefined, undefined, { generatorKind: 'image' }));
             document.getElementById('addNodeOutputBtn').addEventListener('click', () => addOutputNode());
 
             // Right-click menu logic
@@ -2145,14 +2249,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (action === 'text_input') addTextInputNode(spawnX, spawnY);
                     else if (action === 'image_input') addImageInputNode(spawnX, spawnY);
                     else if (action === 'video_input') addVideoInputNode(spawnX, spawnY);
-                    else if (action === 'generator_image') addGeneratorNode(spawnX + 250, spawnY, { outputType: 'image' });
-                    else if (action === 'generator_video') addGeneratorNode(spawnX + 250, spawnY, { outputType: 'video' });
+                    else if (action === 'generator_image') addGeneratorNode(spawnX + 250, spawnY, { generatorKind: 'image' });
+                    else if (action === 'generator_video') addGeneratorNode(spawnX + 250, spawnY, { generatorKind: 'video' });
                     else if (action === 'assistant') addGeneratorNode(spawnX + 250, spawnY, {
-                        outputType: 'prompt',
+                        generatorKind: 'agent',
                         agentPrompt: 'You are a prompt assistant. Improve and structure the prompt for image generation.'
                     });
                     else if (action === 'generator_upscaler') addGeneratorNode(spawnX + 250, spawnY, {
-                        outputType: 'image',
+                        generatorKind: 'image',
                         agentPrompt: 'Upscale and enhance the input image while preserving composition and identity.'
                     });
                     else if (action === 'output_result') addOutputNode(spawnX + 500, spawnY);
@@ -2339,20 +2443,25 @@ document.addEventListener('DOMContentLoaded', () => {
                                     const agentPromptEl = dom.querySelector('.node-agent-prompt') || { value: '' };
                                     const modelSelect = dom.querySelector('.node-input-model');
                                     const outputTypeEl = dom.querySelector('.node-output-type');
+                                    const kindEl = dom.querySelector('.node-generator-kind');
+                                    const agentOutputFormatEl = dom.querySelector('.node-agent-output-format');
                                     const countEl = dom.querySelector('.node-gen-count');
                                     const styleEl = dom.querySelector('.node-gen-style');
                                     const ratioEl = dom.querySelector('.node-gen-ratio');
                                     const resolutionEl = dom.querySelector('.node-gen-resolution');
+                                    const durationEl = dom.querySelector('.node-gen-duration');
                                     const localRefPreview = dom.querySelector('.node-generator-reference-preview');
 
-                                    // Legacy node compatibility: infer output type from old node names.
-                                    let outputType = outputTypeEl ? outputTypeEl.value : 'image';
-                                    if (node.name === 'prompt_gen') outputType = 'prompt';
-                                    if (node.name === 'video_gen') outputType = 'video';
-                                    if (node.name === 'image_gen' || node.name === 'base_gen' || node.name === 'modifier') outputType = 'image';
+                                    const legacyOutputType = outputTypeEl ? outputTypeEl.value : (node.data?.outputType || 'image');
+                                    const generatorKind = normalizeGeneratorKind(
+                                        kindEl ? kindEl.value : (node.data?.generatorKind || dom.dataset.generatorKind),
+                                        (node.name === 'prompt_gen') ? 'prompt' : ((node.name === 'video_gen') ? 'video' : legacyOutputType)
+                                    );
+                                    const outputType = getOutputTypeForGeneratorKind(generatorKind);
 
                                     const localPrompt = promptEl.value ? promptEl.value.trim() : '';
                                     const agentPrompt = agentPromptEl.value ? agentPromptEl.value.trim() : '';
+                                    const agentOutputFormat = agentOutputFormatEl ? agentOutputFormatEl.value : (node.data?.agentOutputFormat || 'text');
 
                                     const refTexts = referenceImages.filter(v => typeof v === 'string' && !v.startsWith('data:image'));
                                     const refImgs = referenceImages.filter(v => typeof v === 'string' && v.startsWith('data:image'));
@@ -2366,8 +2475,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                     const style = styleEl ? styleEl.value : 'auto';
                                     const aspectRatio = ratioEl ? ratioEl.value : '16:9';
                                     const resolution = resolutionEl ? resolutionEl.value : '1K';
+                                    const durationSeconds = Math.max(4, Math.min(8, Number(durationEl ? durationEl.value : 8) || 8));
 
-                                    if (!combinedPrompt && (outputType === 'image' || outputType === 'prompt')) {
+                                    if (!combinedPrompt && (outputType === 'image' || outputType === 'prompt' || outputType === 'video')) {
                                         throw new Error("Generator requires text input (Agent Prompt, Text Prompt, or upstream text).");
                                     }
 
@@ -2390,10 +2500,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                         });
                                         const data = await res.json();
                                         if (data.prompt) {
-                                            resultUrl = data.prompt;
+                                            resultUrl = formatAgentResultText(data.prompt, agentOutputFormat);
                                             nodeResults[id] = resultUrl;
                                             if (resultContainer) {
-                                                resultContainer.innerHTML = `<textarea class="node-result-text w-full h-full bg-transparent px-4 pt-14 pb-14 text-sm text-zinc-100 outline-none resize-none custom-scrollbar">${data.prompt}</textarea>`;
+                                                resultContainer.innerHTML = `<textarea class="node-result-text w-full h-full bg-transparent px-4 pt-14 pb-14 text-sm text-zinc-100 outline-none resize-none custom-scrollbar">${resultUrl}</textarea>`;
                                                 setGeneratorView(dom, 'result');
                                             }
                                         } else {
@@ -2454,7 +2564,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                             config: {
                                                 modelId: modelSelect ? modelSelect.value : 'veo-3.1-fast-generate-preview',
                                                 aspectRatio,
-                                                resolution
+                                                resolution,
+                                                durationSeconds
                                             }
                                         };
                                         const res = await fetch('/api/generate-video', {
@@ -2587,7 +2698,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     scheduleWorkflowAutosave();
                     return;
                 }
-                if (target.classList.contains('node-input-model') || target.classList.contains('node-gen-style') || target.classList.contains('node-gen-ratio') || target.classList.contains('node-gen-resolution') || target.classList.contains('node-gen-count')) {
+                if (target.classList.contains('node-input-model') || target.classList.contains('node-gen-style') || target.classList.contains('node-gen-ratio') || target.classList.contains('node-gen-resolution') || target.classList.contains('node-gen-count') || target.classList.contains('node-gen-duration') || target.classList.contains('node-agent-output-format')) {
                     scheduleWorkflowAutosave();
                     return;
                 }
