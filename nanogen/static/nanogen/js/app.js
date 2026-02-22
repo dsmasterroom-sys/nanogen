@@ -698,6 +698,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     const dom = document.getElementById('node-' + id);
                     if (!dom) return;
                     const data = node.data || {};
+                    const titleEl = ensureNodeTitleLabel(dom, node.name);
+                    if (titleEl) {
+                        const customTitle = (data.customTitle || '').trim();
+                        if (customTitle) {
+                            titleEl.textContent = customTitle;
+                        } else if (!titleEl.textContent.trim()) {
+                            titleEl.textContent = DEFAULT_NODE_TITLE_MAP[node.name] || 'Node';
+                        }
+                    }
 
                     if (node.name === 'text_input') {
                         const textEl = dom.querySelector('.node-input-text');
@@ -805,6 +814,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         if (statusEl) statusEl.textContent = data.statusText || 'Waiting...';
                         setGeneratorView(dom, data.generatorView || 'prompt');
+                        refreshGeneratorAttachmentBar(dom);
                         if (data.nodeWidth || data.nodeHeight) applyNodeSize(dom, data.nodeWidth, data.nodeHeight);
                     } else if (node.name === 'output_result') {
                         const outDisplay = dom.querySelector('.node-output-display');
@@ -831,6 +841,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     const dom = document.getElementById('node-' + id);
                     if (!dom) return;
                     const data = (node.data && typeof node.data === 'object') ? node.data : {};
+                    const titleEl = ensureNodeTitleLabel(dom, node.name);
+                    data.customTitle = titleEl ? (titleEl.textContent || '').trim() : (data.customTitle || '');
                     data.nodeWidth = dom.offsetWidth || data.nodeWidth || null;
                     data.nodeHeight = dom.offsetHeight || data.nodeHeight || null;
 
@@ -1475,6 +1487,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const decorateNodePorts = (nodeId, nodeName) => {
                 const nodeEl = document.getElementById(`node-${nodeId}`);
                 if (!nodeEl) return;
+                ensureNodeTitleLabel(nodeEl, nodeName);
                 const meta = PORT_LABEL_MAP[nodeName] || {};
 
                 const setPortBadge = (portEl, kind, value) => {
@@ -1772,14 +1785,310 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
 
+            function getNodeDisplayName(nodeId, nodeObj) {
+                const dom = document.getElementById(`node-${nodeId}`);
+                const domLabel = dom ? dom.querySelector('.node-title-label') : null;
+                const domTitle = domLabel ? (domLabel.textContent || '').trim() : '';
+                if (domTitle) return domTitle;
+                const dataTitle = nodeObj?.data?.customTitle ? String(nodeObj.data.customTitle).trim() : '';
+                if (dataTitle) return dataTitle;
+                return DEFAULT_NODE_TITLE_MAP[nodeObj?.name] || `Node ${nodeId}`;
+            }
+
+            function getSourceVisualMeta(src) {
+                const type = src?.type || '';
+                const data = src?.data || {};
+
+                if (type === 'image_input') {
+                    return {
+                        kind: 'image',
+                        icon: 'image',
+                        iconTone: 'text-violet-400',
+                        chipClass: 'border-zinc-200/20 bg-zinc-100/95 text-zinc-900 hover:bg-white'
+                    };
+                }
+                if (type === 'text_input') {
+                    return {
+                        kind: 'icon',
+                        icon: 'type',
+                        iconTone: 'text-white',
+                        chipClass: 'border-emerald-300/40 bg-emerald-500 text-white hover:bg-emerald-400'
+                    };
+                }
+                if (type === 'video_input') {
+                    return {
+                        kind: 'icon',
+                        icon: 'video',
+                        iconTone: 'text-white',
+                        chipClass: 'border-blue-300/40 bg-blue-500 text-white hover:bg-blue-400'
+                    };
+                }
+                if (type === 'generator' || type === 'prompt_gen' || type === 'image_gen' || type === 'video_gen' || type === 'base_gen' || type === 'modifier') {
+                    const kind = normalizeGeneratorKind(data.generatorKind, data.outputType || 'image');
+                    const isUpscaler = kind === 'image' && /upscale|enhance/i.test(String(data.agentPrompt || ''));
+                    if (isUpscaler) {
+                        return {
+                            kind: 'icon',
+                            icon: 'scan-search',
+                            iconTone: 'text-indigo-300',
+                            chipClass: 'border-indigo-400/40 bg-indigo-500/20 text-indigo-200 hover:bg-indigo-500/30'
+                        };
+                    }
+                    if (kind === 'video') {
+                        return {
+                            kind: 'icon',
+                            icon: 'clapperboard',
+                            iconTone: 'text-violet-300',
+                            chipClass: 'border-violet-400/40 bg-violet-500/20 text-violet-200 hover:bg-violet-500/30'
+                        };
+                    }
+                    if (kind === 'agent') {
+                        return {
+                            kind: 'icon',
+                            icon: 'sparkles',
+                            iconTone: 'text-emerald-300',
+                            chipClass: 'border-emerald-400/40 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30'
+                        };
+                    }
+                    return {
+                        kind: 'icon',
+                        icon: 'image-plus',
+                        iconTone: 'text-indigo-300',
+                        chipClass: 'border-indigo-400/40 bg-indigo-500/20 text-indigo-200 hover:bg-indigo-500/30'
+                    };
+                }
+
+                return {
+                    kind: 'icon',
+                    icon: 'circle',
+                    iconTone: 'text-zinc-400',
+                    chipClass: 'border-zinc-600 bg-zinc-800/95 text-zinc-200 hover:bg-zinc-700'
+                };
+            }
+
+            function getGeneratorUpstreamSources(generatorNodeId) {
+                let exportData = null;
+                try {
+                    exportData = captureNodeUIIntoGraph(window.editor.export());
+                } catch (e) {
+                    exportData = window.editor.export();
+                }
+                const nodes = exportData?.drawflow?.Home?.data || {};
+                const target = nodes[String(generatorNodeId)];
+                if (!target || !target.inputs) return [];
+                const seen = new Set();
+                const out = [];
+
+                Object.values(target.inputs).forEach((inputPort) => {
+                    const conns = Array.isArray(inputPort?.connections) ? inputPort.connections : [];
+                    conns.forEach((conn) => {
+                        const sourceId = String(conn?.node ?? '');
+                        if (!sourceId || seen.has(sourceId)) return;
+                        const sourceNode = nodes[sourceId];
+                        if (!sourceNode) return;
+                        seen.add(sourceId);
+                        out.push({
+                            id: sourceId,
+                            name: getNodeDisplayName(sourceId, sourceNode),
+                            type: sourceNode.name || 'node',
+                            data: sourceNode.data || {}
+                        });
+                    });
+                });
+                return out;
+            }
+
+            function insertAtMention(textarea, mentionContext, label) {
+                if (!textarea || !mentionContext) return;
+                const value = textarea.value || '';
+                const before = value.slice(0, mentionContext.start);
+                const after = value.slice(mentionContext.end);
+                const insertion = `@${label} `;
+                textarea.value = `${before}${insertion}${after}`;
+                const nextPos = before.length + insertion.length;
+                textarea.setSelectionRange(nextPos, nextPos);
+                textarea.focus();
+                scheduleWorkflowAutosave();
+            }
+
+            function getMentionContext(textarea) {
+                if (!textarea) return null;
+                const value = textarea.value || '';
+                const caret = textarea.selectionStart ?? value.length;
+                const left = value.slice(0, caret);
+                const at = left.lastIndexOf('@');
+                if (at < 0) return null;
+                const prev = at > 0 ? left[at - 1] : ' ';
+                if (!/\s|[\(\[\{,]/.test(prev)) return null;
+                const query = left.slice(at + 1);
+                if (/[\s\n]/.test(query)) return null;
+                return { start: at, end: caret, query: query.toLowerCase() };
+            }
+
+            function hideGeneratorMentionMenu(nodeEl) {
+                if (!nodeEl) return;
+                const menu = nodeEl.querySelector('.node-mention-menu');
+                if (!menu) return;
+                menu.classList.add('hidden');
+                menu.innerHTML = '';
+            }
+
+            function renderGeneratorMentionMenu(nodeEl, textarea, sources, mentionContext) {
+                const menu = nodeEl.querySelector('.node-mention-menu');
+                if (!menu || !textarea || !mentionContext) return;
+                const q = mentionContext.query || '';
+                const matched = sources.filter((s) => s.name.toLowerCase().includes(q));
+                if (matched.length === 0) {
+                    hideGeneratorMentionMenu(nodeEl);
+                    return;
+                }
+                menu.innerHTML = '';
+                const header = document.createElement('div');
+                header.className = 'px-2.5 pb-1.5 text-[10px] uppercase tracking-wider text-zinc-500';
+                header.textContent = 'Reference Tags';
+                menu.appendChild(header);
+
+                matched.slice(0, 8).forEach((src) => {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left text-xs text-zinc-100 hover:bg-zinc-800/95 transition-colors';
+                    const visual = getSourceVisualMeta(src);
+                    const icon = visual.icon;
+                    const iconTone = visual.iconTone;
+                    btn.innerHTML = `<span class="w-5 h-5 rounded-md bg-zinc-800 border border-zinc-700 flex items-center justify-center"><i data-lucide="${icon}" class="w-3 h-3 ${iconTone}"></i></span><span class="truncate font-medium">${src.name}</span>`;
+                    btn.addEventListener('mousedown', (evt) => {
+                        evt.preventDefault();
+                        insertAtMention(textarea, mentionContext, src.name);
+                        hideGeneratorMentionMenu(nodeEl);
+                    });
+                    menu.appendChild(btn);
+                });
+                menu.classList.remove('hidden');
+                safeCreateIcons();
+            }
+
+            function refreshGeneratorAttachmentBar(nodeEl) {
+                if (!nodeEl) return;
+                const nodeId = (nodeEl.id || '').replace('node-', '');
+                const bar = nodeEl.querySelector('.node-attachment-bar');
+                const promptEl = nodeEl.querySelector('.node-gen-prompt');
+                if (!nodeId || !bar || !promptEl) return;
+
+                const sources = getGeneratorUpstreamSources(nodeId);
+                bar.innerHTML = '';
+                nodeEl.__generatorSources = sources;
+
+                sources.forEach((src) => {
+                    const visual = getSourceVisualMeta(src);
+                    const chip = document.createElement('button');
+                    chip.type = 'button';
+                    chip.className = 'shrink-0 w-9 h-9 inline-flex items-center justify-center rounded-lg border transition-colors overflow-hidden';
+                    chip.title = src.name;
+                    chip.setAttribute('aria-label', src.name);
+                    if (visual.kind === 'image' && src.data?.imageBase64) {
+                        chip.classList.add(...visual.chipClass.split(' '));
+                        const img = document.createElement('img');
+                        img.src = src.data.imageBase64;
+                        img.className = 'w-full h-full object-cover';
+                        chip.appendChild(img);
+                    } else {
+                        chip.classList.add(...visual.chipClass.split(' '));
+                        const iconName = visual.icon;
+                        const icon = document.createElement('i');
+                        icon.setAttribute('data-lucide', iconName);
+                        icon.className = `w-4 h-4 ${visual.iconTone || ''}`.trim();
+                        chip.appendChild(icon);
+                    }
+                    chip.addEventListener('click', (evt) => {
+                        evt.preventDefault();
+                        const caret = promptEl.selectionStart ?? (promptEl.value || '').length;
+                        const mentionContext = { start: caret, end: caret, query: '' };
+                        insertAtMention(promptEl, mentionContext, src.name);
+                    });
+                    bar.appendChild(chip);
+                });
+                safeCreateIcons();
+            }
+
+            function refreshAllGeneratorAttachmentBars() {
+                container.querySelectorAll('.drawflow-node.generator').forEach((nodeEl) => {
+                    refreshGeneratorAttachmentBar(nodeEl);
+                });
+            }
+
+            const DEFAULT_NODE_TITLE_MAP = {
+                text_input: 'Text Input',
+                image_input: 'Image Input',
+                video_input: 'Video Input',
+                generator: 'Generator',
+                prompt_gen: 'Prompt Agent',
+                image_gen: 'Image Generator',
+                video_gen: 'Video Generator',
+                output_result: 'Output Result'
+            };
+
+            function ensureNodeTitleLabel(nodeEl, nodeName) {
+                if (!nodeEl) return null;
+                const titleBox = nodeEl.querySelector('.title-box');
+                if (!titleBox) return null;
+                const iconEl = titleBox.querySelector('i, svg');
+                if (iconEl) {
+                    iconEl.classList.add('node-title-icon');
+                    const inWrap = iconEl.parentElement && iconEl.parentElement.classList.contains('node-title-icon-wrap');
+                    if (!inWrap) {
+                        const wrap = document.createElement('span');
+                        wrap.className = 'node-title-icon-wrap';
+                        iconEl.parentNode.insertBefore(wrap, iconEl);
+                        wrap.appendChild(iconEl);
+                    }
+                }
+                let labelEl = titleBox.querySelector('.node-title-label');
+                if (!labelEl) {
+                    labelEl = titleBox.querySelector('span');
+                    if (labelEl) labelEl.classList.add('node-title-label');
+                }
+                if (labelEl && !labelEl.textContent.trim()) {
+                    labelEl.textContent = DEFAULT_NODE_TITLE_MAP[nodeName] || 'Node';
+                }
+                return labelEl;
+            }
+
+            function escapeRegExp(str) {
+                return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            }
+
+            function getNextSequentialNodeTitle(baseTitle) {
+                let graph = null;
+                try {
+                    graph = window.editor.export();
+                } catch (e) {
+                    graph = { drawflow: { Home: { data: {} } } };
+                }
+                const nodes = graph?.drawflow?.Home?.data || {};
+                const pattern = new RegExp(`^${escapeRegExp(baseTitle)}\\s*#(\\d+)$`, 'i');
+                let maxNum = 0;
+
+                Object.values(nodes).forEach((node) => {
+                    const customTitle = (node?.data?.customTitle || '').trim();
+                    if (!customTitle) return;
+                    const m = customTitle.match(pattern);
+                    if (!m) return;
+                    const n = Number(m[1] || 0);
+                    if (n > maxNum) maxNum = n;
+                });
+
+                return `${baseTitle} #${maxNum + 1}`;
+            }
+
             const addTextInputNode = (x = spawnX, y = spawnY) => {
                 const defaultBg = '#18181b';
+                const title = getNextSequentialNodeTitle('Text Input');
                 const html = `
                     <div class="relative p-2">
                         <div class="node-card">
                             <div class="title-box border-b border-zinc-700 mb-0 flex items-center gap-2">
-                                <i data-lucide="type" class="w-4 h-4 text-emerald-400"></i>
-                                <span>Text Input</span>
+                                <i data-lucide="type" class="node-title-icon w-4 h-4 text-emerald-400"></i>
+                                <span class="node-title-label">${title}</span>
                                 <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
                                     <i data-lucide="play" class="w-3.5 h-3.5"></i>
                                 </button>
@@ -1826,6 +2135,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     textItalic: false,
                     textUnderline: false,
                     textListType: '',
+                    customTitle: title,
                     nodeWidth: 280,
                     nodeHeight: 170
                 }, html);
@@ -1841,11 +2151,12 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             const addImageInputNode = (x = spawnX, y = spawnY) => {
+                const title = getNextSequentialNodeTitle('Image Input');
                 const html = `
                     <div>
                         <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2">
-                            <i data-lucide="image" class="w-4 h-4 text-emerald-500"></i>
-                            <span>Image Input</span>
+                            <i data-lucide="image" class="node-title-icon w-4 h-4 text-emerald-500"></i>
+                            <span class="node-title-label">${title}</span>
                             <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
                                 <i data-lucide="play" class="w-3.5 h-3.5"></i>
                             </button>
@@ -1862,7 +2173,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                     </div>
                 `;
-                const imageNodeId = window.editor.addNode('image_input', 0, 1, x, y, 'image_input', { imageBase64: null, nodeWidth: 280, nodeHeight: 180 }, html);
+                const imageNodeId = window.editor.addNode('image_input', 0, 1, x, y, 'image_input', { imageBase64: null, customTitle: title, nodeWidth: 280, nodeHeight: 180 }, html);
                 decorateNodePorts(imageNodeId, 'image_input');
                 ensureNodeResizeHandle(imageNodeId);
                 applyNodeSize(document.getElementById(`node-${imageNodeId}`), 280, 180);
@@ -1875,11 +2186,12 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             const addVideoInputNode = (x = spawnX, y = spawnY) => {
+                const title = getNextSequentialNodeTitle('Video Input');
                 const html = `
                     <div>
                         <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2">
-                            <i data-lucide="video" class="w-4 h-4 text-blue-500"></i>
-                            <span>Video Input</span>
+                            <i data-lucide="video" class="node-title-icon w-4 h-4 text-blue-500"></i>
+                            <span class="node-title-label">${title}</span>
                             <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
                                 <i data-lucide="play" class="w-3.5 h-3.5"></i>
                             </button>
@@ -1895,7 +2207,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                     </div>
                 `;
-                const videoNodeId = window.editor.addNode('video_input', 0, 1, x, y, 'video_input', { videoUrl: null, nodeWidth: 280, nodeHeight: 180 }, html);
+                const videoNodeId = window.editor.addNode('video_input', 0, 1, x, y, 'video_input', { videoUrl: null, customTitle: title, nodeWidth: 280, nodeHeight: 180 }, html);
                 decorateNodePorts(videoNodeId, 'video_input');
                 ensureNodeResizeHandle(videoNodeId);
                 applyNodeSize(document.getElementById(`node-${videoNodeId}`), 280, 180);
@@ -1921,6 +2233,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const durationSeconds = Math.max(4, Math.min(8, Number(defaults.durationSeconds || 8)));
                 const agentOutputFormat = defaults.agentOutputFormat || 'text';
                 const ui = getGeneratorUIConfig(generatorKind);
+                const title = getNextSequentialNodeTitle(ui.title);
                 const bottomControlsHtml = ui.promptOnly ? `
                                     <div class="absolute left-3 bottom-3 flex items-center gap-2">
                                         <span class="px-3 py-1.5 rounded-full bg-zinc-800/95 border border-zinc-700 text-xs text-zinc-300">Agent</span>
@@ -1970,8 +2283,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div>
                         <div class="node-card p-0">
                             <div class="title-box border-b border-zinc-700 pb-2 mb-0 flex items-center gap-2">
-                                <i data-lucide="${ui.icon}" class="w-4 h-4 ${ui.iconColor}"></i>
-                                <span>${ui.title}</span>
+                                <i data-lucide="${ui.icon}" class="node-title-icon w-4 h-4 ${ui.iconColor}"></i>
+                                <span class="node-title-label">${title}</span>
                                 <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
                                     <i data-lucide="play" class="w-3.5 h-3.5"></i>
                                 </button>
@@ -1990,6 +2303,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                             <i data-lucide="layout-panel-top" class="w-3.5 h-3.5"></i>
                                         </button>
                                     </div>
+                                    <div class="node-attachment-bar absolute top-2 left-28 right-3 z-20 flex items-center gap-1.5 overflow-x-auto custom-scrollbar pl-1 pr-1 pb-0.5"></div>
+                                    <div class="node-mention-menu hidden absolute top-14 left-4 z-30 w-64 max-h-48 overflow-y-auto custom-scrollbar rounded-2xl border border-zinc-700 bg-zinc-900/95 p-1.5 shadow-2xl"></div>
                                     <div class="node-result-container hidden h-full overflow-hidden"></div>
                                     <img class="node-generator-reference-preview hidden absolute inset-0 w-full h-full object-cover opacity-45">
                                     <button type="button" class="node-generator-reference-remove hidden absolute top-2 right-2 p-1.5 bg-black/60 rounded-full text-red-300 hover:text-red-200">
@@ -2028,6 +2343,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     textPrompt,
                     durationSeconds,
                     agentOutputFormat,
+                    customTitle: title,
                     generatorView: defaults.generatorView || 'prompt',
                     nodeWidth: 620,
                     nodeHeight: 520
@@ -2039,6 +2355,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 syncGeneratorModelOptions(generatorNodeEl);
                 setGeneratorView(generatorNodeEl, defaults.generatorView || 'prompt');
                 applyNodeSize(generatorNodeEl, 620, 520);
+                refreshGeneratorAttachmentBar(generatorNodeEl);
                 incrementSpawn();
                 hideOverlay();
                 hideContextMenu();
@@ -2048,11 +2365,12 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             const addOutputNode = (x = spawnX + 500, y = spawnY) => {
+                const title = getNextSequentialNodeTitle('Output Result');
                 const html = `
                     <div>
                         <div class="title-box border-b border-zinc-700 pb-2 mb-2 flex items-center gap-2">
-                            <i data-lucide="monitor-play" class="w-4 h-4 text-yellow-500"></i>
-                            <span>Output Result</span>
+                            <i data-lucide="monitor-play" class="node-title-icon w-4 h-4 text-yellow-500"></i>
+                            <span class="node-title-label">${title}</span>
                             <button type="button" class="node-run-btn ml-auto p-1 rounded bg-zinc-800/70 hover:bg-zinc-700 text-zinc-200" title="Run Node">
                                 <i data-lucide="play" class="w-3.5 h-3.5"></i>
                             </button>
@@ -2064,7 +2382,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 `;
                 // 1 Input (any), 0 Output
-                const outputNodeId = window.editor.addNode('output_result', 1, 0, x, y, 'output_result', { nodeWidth: 280, nodeHeight: 170 }, html);
+                const outputNodeId = window.editor.addNode('output_result', 1, 0, x, y, 'output_result', { customTitle: title, nodeWidth: 280, nodeHeight: 170 }, html);
                 decorateNodePorts(outputNodeId, 'output_result');
                 ensureNodeResizeHandle(outputNodeId);
                 applyNodeSize(document.getElementById(`node-${outputNodeId}`), 280, 170);
@@ -2075,6 +2393,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 applyNoDragGuards(container);
                 scheduleWorkflowAutosave();
             };
+
+            const removeConnectionFromPath = (pathEl) => {
+                if (!pathEl || !window.editor) return false;
+                try {
+                    window.editor.connection_selected = pathEl;
+                    window.editor.removeConnection();
+                    scheduleWorkflowAutosave();
+                    return true;
+                } catch (err) {
+                    console.warn('Failed to remove connection:', err);
+                    return false;
+                }
+            };
+
+            if (typeof window.editor.on === 'function') {
+                window.editor.on('connectionCreated', () => {
+                    refreshAllGeneratorAttachmentBars();
+                    scheduleWorkflowAutosave();
+                });
+                window.editor.on('connectionRemoved', () => {
+                    refreshAllGeneratorAttachmentBars();
+                    scheduleWorkflowAutosave();
+                });
+                window.editor.on('nodeRemoved', () => {
+                    refreshAllGeneratorAttachmentBars();
+                    scheduleWorkflowAutosave();
+                });
+            }
 
             // Floating add menu bindings
             document.getElementById('addNodeTextInputBtn').addEventListener('click', () => addTextInputNode());
@@ -2116,6 +2462,14 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             container.addEventListener('contextmenu', openContextMenu);
+            container.addEventListener('contextmenu', (e) => {
+                const connectionPath = e.target.closest('.connection .main-path');
+                if (!connectionPath) return;
+                e.preventDefault();
+                e.stopPropagation();
+                hideContextMenu();
+                removeConnectionFromPath(connectionPath);
+            }, true);
 
             // Prevent canvas panning by default. Panning is allowed only while Space is held.
             const clearNodeSelection = (opts = {}) => {
@@ -2782,12 +3136,30 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('drawflow').addEventListener('input', (e) => {
                 const target = e.target;
                 applyHeadingFromSelect(target);
+                if (target.classList.contains('node-gen-prompt')) {
+                    const nodeEl = target.closest('.drawflow-node');
+                    if (nodeEl) {
+                        const mentionContext = getMentionContext(target);
+                        if (mentionContext) {
+                            const sources = Array.isArray(nodeEl.__generatorSources) ? nodeEl.__generatorSources : getGeneratorUpstreamSources((nodeEl.id || '').replace('node-', ''));
+                            renderGeneratorMentionMenu(nodeEl, target, sources, mentionContext);
+                        } else {
+                            hideGeneratorMentionMenu(nodeEl);
+                        }
+                    }
+                }
                 if (target.closest('.drawflow-node')) {
                     scheduleWorkflowAutosave();
                 }
             });
 
             document.getElementById('drawflow').addEventListener('click', (e) => {
+                if (!e.target.closest('.node-mention-menu')) {
+                    container.querySelectorAll('.node-mention-menu').forEach((menu) => {
+                        menu.classList.add('hidden');
+                    });
+                }
+
                 const viewBtn = e.target.closest('.node-view-toggle-btn');
                 if (viewBtn) {
                     e.stopPropagation();
@@ -2969,6 +3341,31 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (input) input.value = ''; // Reset input
                     scheduleWorkflowAutosave();
                 }
+            });
+
+            document.getElementById('drawflow').addEventListener('dblclick', (e) => {
+                const connectionPath = e.target.closest('.connection .main-path');
+                if (connectionPath) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    removeConnectionFromPath(connectionPath);
+                    return;
+                }
+                const titleLabel = e.target.closest('.node-title-label');
+                if (!titleLabel) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const current = (titleLabel.textContent || '').trim();
+                const next = prompt('노드 이름 변경:', current || 'Node');
+                if (next === null) return;
+                const trimmed = next.trim();
+                if (!trimmed) {
+                    alert('노드 이름은 비워둘 수 없습니다.');
+                    return;
+                }
+                titleLabel.textContent = trimmed;
+                refreshAllGeneratorAttachmentBars();
+                scheduleWorkflowAutosave();
             });
 
             safeCreateIcons();
