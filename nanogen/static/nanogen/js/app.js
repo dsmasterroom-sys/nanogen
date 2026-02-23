@@ -1750,6 +1750,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 return lines.map((line) => (line.startsWith('- ') ? line : `- ${line}`)).join('\n');
             }
 
+            function splitVideoScenarios(rawText) {
+                const text = String(rawText || '').trim();
+                if (!text) return [];
+
+                const starts = [];
+                const reStyle = /style\s*:/gi;
+                let m;
+                while ((m = reStyle.exec(text)) !== null) {
+                    starts.push(m.index);
+                }
+
+                // Multi-scenario blocks are typically emitted with repeated "Style:"
+                if (starts.length >= 2) {
+                    const blocks = [];
+                    for (let i = 0; i < starts.length; i++) {
+                        const s = starts[i];
+                        const e = i + 1 < starts.length ? starts[i + 1] : text.length;
+                        const chunk = text.slice(s, e).trim();
+                        if (chunk) blocks.push(chunk);
+                    }
+                    return blocks.slice(0, 6);
+                }
+
+                return [text];
+            }
+
             function setGeneratorView(nodeEl, view) {
                 if (!nodeEl) return;
                 const promptEl = nodeEl.querySelector('.node-gen-prompt');
@@ -2663,6 +2689,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         return urls.length > 0 ? urls[0] : null;
                     }
                     if (resultType === 'video') {
+                        const many = Array.isArray(data.generatedVideoUrls) ? data.generatedVideoUrls.filter(Boolean) : [];
+                        if (many.length > 0) return many[0];
                         return (typeof data.generatedVideoUrl === 'string' && data.generatedVideoUrl) ? data.generatedVideoUrl : null;
                     }
                     if (resultType === 'text') {
@@ -2841,6 +2869,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                         localPrompt ? `[NODE PROMPT]\n${localPrompt}` : '',
                                         refTexts.length ? `[UPSTREAM TEXT INPUTS]\n${refTexts.join('\n')}` : ''
                                     ].filter(Boolean).join('\n\n');
+                                    const promptSignal = `${agentPrompt}\n${localPrompt}\n${refTexts.join('\n')}`.toLowerCase();
+                                    const inferredPromptMediaType = /\b(video|sora|runway|luma|veo|shot|scene|cinematography|dialogue|background sound|camera movement)\b/.test(promptSignal)
+                                        ? 'video'
+                                        : 'image';
                                     const subjectPrompt = localPrompt;
                                     const imageCount = Math.max(1, Math.min(8, Number(countEl ? countEl.value : 1) || 1));
                                     const style = styleEl ? styleEl.value : 'auto';
@@ -2848,30 +2880,36 @@ document.addEventListener('DOMContentLoaded', () => {
                                     const resolution = resolutionEl ? resolutionEl.value : '1K';
                                     const durationSeconds = Math.max(4, Math.min(8, Number(durationEl ? durationEl.value : 8) || 8));
 
-                                    if (!combinedPrompt && (outputType === 'image' || outputType === 'prompt' || outputType === 'video')) {
+                                    if (outputType === 'prompt') {
+                                        if (!combinedPrompt && refImgs.length === 0) {
+                                            throw new Error("Prompt Assistant requires text or reference inputs.");
+                                        }
+                                    } else if (!combinedPrompt) {
                                         throw new Error("Generator requires text input (Agent Prompt, Text Prompt, or upstream text).");
-                                    }
-                                    if (outputType === 'prompt' && !localPrompt) {
-                                        throw new Error("Prompt Assistant requires prompt text written in its node.");
                                     }
 
                                     if (outputType === 'prompt') {
+                                        const primaryPromptForAgent = localPrompt || (refTexts[0] ? String(refTexts[0]).trim() : '');
+                                        const secondaryTextForAgent = localPrompt
+                                            ? refTexts.join('\n')
+                                            : refTexts.slice(1).join('\n');
                                         const reqBody = {
                                             // Prompt Assistant rule:
-                                            // - Main: node-authored prompt (localPrompt)
-                                            // - References: upstream text/image inputs
-                                            subject: subjectPrompt,
+                                            // - Main: node-authored prompt if present
+                                            // - Fallback main: first upstream text input
+                                            // - References: remaining upstream text/image inputs
+                                            subject: subjectPrompt || primaryPromptForAgent,
                                             presets: refTexts,
                                             referenceImages: refImgs,
                                             agentInstruction: agentPrompt,
-                                            primaryPrompt: localPrompt,
-                                            secondaryText: refTexts.join('\n'),
+                                            primaryPrompt: primaryPromptForAgent,
+                                            secondaryText: secondaryTextForAgent,
                                             config: {
                                                 modelId: modelSelect ? modelSelect.value : 'gemini-2.5-flash',
                                                 aspectRatio,
                                                 resolution
                                             },
-                                            media_type: 'image'
+                                            media_type: inferredPromptMediaType
                                         };
                                         const res = await fetch('/api/prompt/midjourney', {
                                             method: 'POST',
@@ -2885,6 +2923,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                             node.data = node.data || {};
                                             node.data.generatedImageUrls = [];
                                             node.data.generatedVideoUrl = '';
+                                            node.data.generatedVideoUrls = [];
                                             node.data.generatedTextResult = resultUrl;
                                             node.data.resultType = 'text';
                                             node.data.statusText = 'Completed';
@@ -2933,6 +2972,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                             node.data = node.data || {};
                                             node.data.generatedImageUrls = urls;
                                             node.data.generatedVideoUrl = '';
+                                            node.data.generatedVideoUrls = [];
                                             node.data.generatedTextResult = '';
                                             node.data.resultType = 'image';
                                             node.data.statusText = 'Completed';
@@ -2950,38 +2990,63 @@ document.addEventListener('DOMContentLoaded', () => {
                                             throw new Error('Image generation failed');
                                         }
                                     } else if (outputType === 'video') {
-                                        const reqBody = {
-                                            prompt: combinedPrompt,
-                                            referenceImages: refImgs,
-                                            config: {
-                                                modelId: modelSelect ? modelSelect.value : 'veo-3.1-fast-generate-preview',
-                                                aspectRatio,
-                                                resolution,
-                                                durationSeconds
+                                        const videoPromptSource = (localPrompt || refTexts.join('\n\n') || combinedPrompt || '').trim();
+                                        const scenarios = splitVideoScenarios(videoPromptSource);
+                                        if (scenarios.length === 0) {
+                                            throw new Error('Video Generator requires at least one prompt scenario.');
+                                        }
+
+                                        const videoUrls = [];
+                                        for (let i = 0; i < scenarios.length; i++) {
+                                            const scenarioPrompt = scenarios[i];
+                                            if (resultContainer) {
+                                                resultContainer.classList.remove('hidden');
+                                                resultContainer.innerHTML = `<div class="text-xs text-yellow-400 py-2 text-center bg-yellow-900/20 rounded border border-yellow-700/30">Generating video ${i + 1}/${scenarios.length}...</div>`;
                                             }
-                                        };
-                                        const res = await fetch('/api/generate-video', {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify(reqBody)
-                                        });
-                                        const data = await res.json();
-                                        if (!res.ok) {
-                                            throw new Error(data.error || `Video generation failed (${res.status})`);
+
+                                            const reqBody = {
+                                                prompt: scenarioPrompt,
+                                                referenceImages: refImgs,
+                                                config: {
+                                                    modelId: modelSelect ? modelSelect.value : 'veo-3.1-fast-generate-preview',
+                                                    aspectRatio,
+                                                    resolution,
+                                                    durationSeconds
+                                                }
+                                            };
+                                            const res = await fetch('/api/generate-video', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify(reqBody)
+                                            });
+                                            const data = await res.json();
+                                            if (!res.ok) {
+                                                throw new Error(data.error || `Video generation failed (${res.status})`);
+                                            }
+                                            if (!data.url) {
+                                                throw new Error(data.error || 'Video generation failed');
+                                            }
+                                            videoUrls.push(data.url);
                                         }
-                                        if (!data.url) {
-                                            throw new Error(data.error || 'Video generation failed');
-                                        }
-                                        resultUrl = data.url;
+
+                                        resultUrl = videoUrls[0];
                                         nodeResults[id] = resultUrl;
                                         node.data = node.data || {};
                                         node.data.generatedImageUrls = [];
                                         node.data.generatedVideoUrl = resultUrl;
+                                        node.data.generatedVideoUrls = videoUrls;
                                         node.data.generatedTextResult = '';
                                         node.data.resultType = 'video';
-                                        node.data.statusText = 'Completed';
+                                        node.data.statusText = videoUrls.length > 1 ? `Completed (${videoUrls.length} videos)` : 'Completed';
                                         if (resultContainer) {
-                                            resultContainer.innerHTML = `<video src="${resultUrl}" class="w-full h-auto object-cover border border-zinc-700/50 rounded bg-black" controls playsinline></video>`;
+                                            if (videoUrls.length === 1) {
+                                                resultContainer.innerHTML = `<video src="${resultUrl}" class="w-full h-auto object-cover border border-zinc-700/50 rounded bg-black" controls playsinline></video>`;
+                                            } else {
+                                                const items = videoUrls
+                                                    .map((url, idx) => `<video src="${url}" class="w-full h-28 object-cover border border-zinc-700/40 rounded bg-black" controls playsinline title="Scenario ${idx + 1}"></video>`)
+                                                    .join('');
+                                                resultContainer.innerHTML = `<div class="grid grid-cols-2 gap-2 p-2 bg-black/30 rounded">${items}</div>`;
+                                            }
                                             resultContainer.classList.remove('hidden');
                                             setGeneratorView(dom, 'result');
                                         }
