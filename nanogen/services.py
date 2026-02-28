@@ -68,18 +68,30 @@ def extract_image_focused_prompt(prompt):
         return ""
 
     raw = prompt.strip()
+    
+    # Strip Workflow Studio UI prefixes to prevent confusing the image model
+    raw = re.sub(r'\[AGENT INSTRUCTION\][\r\n]*', '', raw, flags=re.IGNORECASE)
+    raw = re.sub(r'\[NODE PROMPT\][\r\n]*', '', raw, flags=re.IGNORECASE)
+    raw = re.sub(r'\[UPSTREAM TEXT INPUTS\][\r\n]*', '', raw, flags=re.IGNORECASE)
+    raw = re.sub(r'\[EXECUTION PROMPT\][\r\n]*', '', raw, flags=re.IGNORECASE)
+    raw = raw.strip()
+
     if not raw:
         return ""
 
     # If prompt contains multiple scenario blocks like:
     # Style: ... Scene: ... Cinematography: ... Actions: ...
-    # keep only the first scenario for single-image generation.
-    style_hits = [m.start() for m in re.finditer(r'\bstyle\s*:', raw, flags=re.IGNORECASE)]
-    if len(style_hits) > 1:
-        raw = raw[style_hits[0]:style_hits[1]].strip()
+    # keep only the first scenario for single-image generation,
+    # UNLESS the user explicitly wants a multi-shot grid.
+    is_multi_shot_grid = bool(re.search(r'multi[-_ ]?shot|contact sheet|split image|\d+\s*분할', raw, flags=re.IGNORECASE))
+    
+    if not is_multi_shot_grid:
+        style_hits = [m.start() for m in re.finditer(r'\bstyle\s*:', raw, flags=re.IGNORECASE)]
+        if len(style_hits) > 1:
+            raw = raw[style_hits[0]:style_hits[1]].strip()
 
     section_pattern = re.compile(
-        r'\b(Style|Scene|Cinematography|Actions|Dialogue|Background sound)\s*:\s*',
+        r'(?:\[|\b)(Style|Scene|Cinematography|Actions|Dialogue|Background sound)(?:\]|&.*\]|\s*:\s*)',
         flags=re.IGNORECASE
     )
     matches = list(section_pattern.finditer(raw))
@@ -114,11 +126,144 @@ def extract_image_focused_prompt(prompt):
 
     focused = ", ".join(kept_chunks)
     focused = re.sub(r'\s+', ' ', focused).strip(' ,')
-    focused = (
-        "Generate a single still image. Ignore dialogue, audio cues, timing markers, and multi-shot transitions. "
-        f"{focused}"
-    )
+    
+    if is_multi_shot_grid:
+        grid_format = "multi-shot grid or contact sheet"
+        count_examples = len(re.findall(r'Example\s*\d+|Shot\s*\d+|Scene\s*\d+', raw, re.IGNORECASE))
+        if count_examples == 4 or "4분할" in raw or "2x2" in raw.lower() or "4 split" in raw.lower():
+            grid_format = "2x2 split grid (exactly 4 panels)"
+            
+        focused = (
+            f"Generate a {grid_format} image containing all the requested scenes. "
+            "CRITICAL: Do not include any text, subtitles, watermarks, or dialogue in the image to prevent corrupted characters. "
+            f"{focused}"
+        )
+    else:
+        focused = (
+            "Generate a single still image. Ignore dialogue, audio cues, timing markers, and multi-shot transitions. "
+            "CRITICAL: Do not include any text, subtitles, watermarks, or dialogue in the image to prevent corrupted characters. "
+            f"{focused}"
+        )
     return focused[:1800]
+
+def extract_video_focused_prompt(prompt, duration_seconds=8):
+    """
+    Parses a prompt structure containing UI tags and scene markers.
+    Builds a unified timecoded sequence instruction for Veo to ensure scene distribution.
+    Also extracts upstream characters/objects to set consistent context.
+    """
+    if not isinstance(prompt, str):
+        return ""
+
+    raw = prompt.strip()
+    
+    # 1) Extract upstream context (often containing character/object definitions)
+    upstream_context = ""
+    upstream_match = re.search(r'\[UPSTREAM TEXT INPUTS\](.*?)(\[NODE PROMPT\]|\[EXECUTION PROMPT\]|$)', raw, flags=re.IGNORECASE | re.DOTALL)
+    if upstream_match:
+        upstream_context = upstream_match.group(1).strip()
+    
+    node_context = ""
+    node_match = re.search(r'\[NODE PROMPT\](.*?)(\[EXECUTION PROMPT\]|\[UPSTREAM TEXT INPUTS\]|$)', raw, flags=re.IGNORECASE | re.DOTALL)
+    if node_match:
+        node_context = node_match.group(1).strip()
+        
+    execution_context = raw
+    execution_match = re.search(r'\[EXECUTION PROMPT\](.*?)(\[NODE PROMPT\]|\[UPSTREAM TEXT INPUTS\]|$)', raw, flags=re.IGNORECASE | re.DOTALL)
+    if execution_match:
+        execution_context = execution_match.group(1).strip()
+
+    # Combine context
+    global_context = []
+    if upstream_context:
+        global_context.append(f"Main Subjects / Environment: {upstream_context}")
+    if node_context:
+        global_context.append(f"Base Tone / Subject: {node_context}")
+
+    # Combined execution clean
+    clean_exec = execution_context
+    clean_exec = re.sub(r'\[AGENT INSTRUCTION\][\r\n]*', '', clean_exec, flags=re.IGNORECASE)
+    clean_exec = re.sub(r'\[NODE PROMPT\][\r\n]*', '', clean_exec, flags=re.IGNORECASE)
+    clean_exec = re.sub(r'\[UPSTREAM TEXT INPUTS\][\r\n]*', '', clean_exec, flags=re.IGNORECASE)
+    clean_exec = re.sub(r'\[EXECUTION PROMPT\][\r\n]*', '', clean_exec, flags=re.IGNORECASE).strip()
+
+    # 2) Identify Scenes
+    lines = clean_exec.split('\n')
+    scenes = []
+    current_scene = []
+    
+    for line in lines:
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+            
+        scene_match = re.match(r'^(example\s*\d+|단락\s*\d+|상황\s*\d+|shot\s*\d+|scene\s*\d+|\d+\.|-|\*)([:.\s]+|$)(.*)', line_clean, re.IGNORECASE)
+        if scene_match:
+            if current_scene:
+                scenes.append(" ".join(current_scene).strip())
+            
+            content = scene_match.group(3).strip()
+            if content:
+                current_scene = [content]
+            else:
+                current_scene = []
+        else:
+            current_scene.append(line_clean)
+                
+    if current_scene:
+        scenes.append(" ".join(current_scene).strip())
+
+    # Fallback to Style blocks if no shot markers found
+    if len(scenes) < 2:
+        starts = [m.start() for m in re.finditer(r'\bstyle\s*:', clean_exec, flags=re.IGNORECASE)]
+        if len(starts) >= 2:
+            scenes = []
+            for i in range(len(starts)):
+                s = starts[i]
+                e = starts[i + 1] if i + 1 < len(starts) else len(clean_exec)
+                chunk = clean_exec[s:e].strip()
+                if chunk:
+                    scenes.append(chunk)
+
+    # Clean non-visual cues from scenes (similar to image focused)
+    cleaned_scenes = []
+    for s in scenes:
+        filtered = []
+        for l in re.split(r'[\n\r]+', s):
+            lower = l.lower()
+            if any(k in lower for k in [
+                'dialogue', 'background sound', 'voice over', 'voiceover',
+                'sound:', '[00:', '나레이션'
+            ]):
+                continue
+            if l.strip():
+                filtered.append(l.strip())
+        cleaned_scenes.append(" ".join(filtered))
+
+    if not cleaned_scenes:
+        cleaned_scenes = [clean_exec[:1800]]
+
+    # 3) Build Final Prompt
+    final_prompt_parts = []
+    
+    if global_context:
+        final_prompt_parts.append("\n".join(global_context))
+        final_prompt_parts.append("Must use the subjects above for the entirety of the video sequence.")
+
+    # Apply Timeline
+    num_scenes = len(cleaned_scenes)
+    if num_scenes > 1:
+        time_per_scene = max(1.0, duration_seconds / num_scenes)
+        final_prompt_parts.append("This is a continuous dynamic video. Generate events along this timeline:")
+        for i, scene_desc in enumerate(cleaned_scenes[:6]): # Cap at 6 scenes to avoid prompt overload
+            start_ts = int(i * time_per_scene)
+            end_ts = int((i + 1) * time_per_scene) if i < num_scenes - 1 else duration_seconds
+            final_prompt_parts.append(f"- {start_ts}s to {end_ts}s: {scene_desc}")
+    else:
+        final_prompt_parts.append("Video Description:")
+        final_prompt_parts.append(cleaned_scenes[0])
+        
+    return "\n\n".join(final_prompt_parts)[:2500]
 
 def generate_image_with_gemini(prompt, config, reference_images=None, mask_image=None):
     """
@@ -268,17 +413,16 @@ def generate_image_with_gemini(prompt, config, reference_images=None, mask_image
     # Execute generation with retries/fallbacks for text-only responses.
     try:
         strict_suffix = "\n\n[OUTPUT FORMAT]\nGenerate an image only. Do not return explanatory text."
-        fallback_model = os.environ.get('IMAGE_FALLBACK_MODEL', 'gemini-2.0-flash-preview-image-generation')
+        fallback_model = os.environ.get('IMAGE_FALLBACK_MODEL', 'gemini-3-pro-image-preview')
         model_candidates = [model_id]
         if fallback_model and fallback_model not in model_candidates:
             model_candidates.append(fallback_model)
-        if 'gemini-2.0-flash-preview-image-generation' not in model_candidates:
-            model_candidates.append('gemini-2.0-flash-preview-image-generation')
         if 'gemini-3-pro-image-preview' not in model_candidates:
             model_candidates.append('gemini-3-pro-image-preview')
 
         last_text_parts = []
         last_diagnostics = None
+        errors_list = []
         for candidate_model in model_candidates:
             try:
                 image_uri, text_parts, diagnostics = call_image_model(candidate_model, final_prompt)
@@ -298,10 +442,13 @@ def generate_image_with_gemini(prompt, config, reference_images=None, mask_image
             except Exception as candidate_err:
                 # Try next candidate model instead of hard-failing on first 404/unsupported model.
                 print(f"Image model failed ({candidate_model}): {candidate_err}")
+                errors_list.append(f"{candidate_model}: {candidate_err}")
                 continue
 
         if last_text_parts:
-            sample = last_text_parts[0][:180]
+            sample = last_text_parts[0][:500]
+            print(f">>> Gemini image model returned text: {last_text_parts}")
+            print(f">>> Diagnostics: {last_diagnostics}")
             raise ValueError(
                 f"Model returned text-only response (requested: {requested_model_id}, used: {model_candidates[-1]}). "
                 f"Sample: {sample}"
@@ -320,9 +467,13 @@ def generate_image_with_gemini(prompt, config, reference_images=None, mask_image
                 parts_diag.append(f"safety={safety}")
             if parts_diag:
                 diag_msg = " Details: " + " | ".join(parts_diag)
-        raise ValueError(
-            f"No image found in response (requested: {requested_model_id}, tried: {', '.join(model_candidates)}).{diag_msg}"
-        )
+                
+        error_reason = f"No image found in response (requested: {requested_model_id}, tried: {', '.join(model_candidates)})."
+        if errors_list:
+            error_details = " | ".join(errors_list)
+            error_reason += f" API Errors: [{error_details}]"
+            
+        raise ValueError(error_reason + diag_msg)
 
     except errors.ServerError as e:
         print(f"GOOGLE API SERVER ERROR: {e}")
@@ -351,6 +502,8 @@ def generate_video_with_veo(prompt, config, reference_images=None):
     allowed_models = {
         'veo-3.1-generate-preview',
         'veo-3.1-fast-generate-preview',
+        'sora',
+        'kling-ai',
     }
     if model_id not in allowed_models:
         model_id = 'veo-3.1-fast-generate-preview'
@@ -372,11 +525,6 @@ def generate_video_with_veo(prompt, config, reference_images=None):
                 t = first_block
         return t[:1800]
 
-    primary_prompt = prompt.strip()
-    fallback_prompt = _compress_prompt(prompt)
-    if not fallback_prompt:
-        fallback_prompt = primary_prompt[:1800]
-
     processed_ref = None
     if reference_images:
         img_bytes, img_mime = process_reference_image(reference_images[0])
@@ -394,6 +542,11 @@ def generate_video_with_veo(prompt, config, reference_images=None):
         except Exception:
             duration_seconds = 8
     duration_seconds = max(4, min(8, duration_seconds))
+
+    primary_prompt = extract_video_focused_prompt(prompt, duration_seconds=duration_seconds).strip()
+    fallback_prompt = _compress_prompt(primary_prompt)
+    if not fallback_prompt:
+        fallback_prompt = primary_prompt[:1800]
 
     # Keep config minimal for broad Veo compatibility.
     # Some models reject optional fields like enhancePrompt.
@@ -509,15 +662,161 @@ def generate_video_with_veo(prompt, config, reference_images=None):
 
 
 
+def get_kling_jwt_token():
+    import jwt
+    import time
+    
+    ak = os.environ.get('KLING_ACCESS_KEY')
+    sk = os.environ.get('KLING_SECRET_KEY')
+    
+    if not ak or not sk:
+        raise ValueError("Missing KLING_ACCESS_KEY or KLING_SECRET_KEY in environment.")
+        
+    headers = {
+        "alg": "HS256",
+        "typ": "JWT"
+    }
+    payload = {
+        "iss": ak,
+        "exp": int(time.time()) + 1800, # valid for 30 minutes
+        "nbf": int(time.time()) - 5
+    }
+    
+    token = jwt.encode(payload, sk, headers=headers)
+    return token
+
+
+def generate_video_with_kling(prompt, config, reference_images=None):
+    import json
+    import time
+    import urllib.request
+    import urllib.error
+    import requests # Required for easier multi-part and JSON operations
+
+    reference_images = reference_images or []
+
+    if not prompt or not isinstance(prompt, str):
+        raise ValueError("Prompt is required for video generation.")
+
+    duration_seconds = 5
+    if isinstance(config, dict):
+        d = int(config.get('durationSeconds', 5))
+        duration_seconds = 10 if d > 5 else 5
+
+    # 1. Process prompt
+    primary_prompt = extract_video_focused_prompt(prompt, duration_seconds=duration_seconds).strip()
+
+    # 2. Get Token
+    token = get_kling_jwt_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    # 3. Check for I2V vs T2V
+    base_endpoint = "text2video"
+    api_url = f"https://api.klingai.com/v1/videos/{base_endpoint}"
+    
+    model_id = config.get('modelId', 'kling-v2-6') if isinstance(config, dict) else 'kling-v2-6'
+    # Fallback if old 'kling-ai' string somehow comes through
+    if model_id == 'kling-ai':
+        model_id = 'kling-v2-6'
+
+    kling_mode = config.get('klingMode', 'std') if isinstance(config, dict) else 'std'
+        
+    payload = {
+        "model_name": model_id,
+        "prompt": primary_prompt,
+        "duration": "10" if duration_seconds == 10 else "5",
+        "mode": kling_mode
+    }
+
+    camera_movement = config.get('cameraMovement', '') if isinstance(config, dict) else ''
+    if camera_movement:
+        camera_map = {
+            'pan_left': 'left',
+            'pan_right': 'right',
+            'tilt_up': 'up',
+            'tilt_down': 'down',
+            'zoom_in': 'zoom_in',
+            'zoom_out': 'zoom_out'
+        }
+        kling_cam_type = camera_map.get(camera_movement)
+        if kling_cam_type:
+            payload["camera_control"] = {
+                "type": kling_cam_type,
+                "value": 5
+            }
+    
+    if reference_images:
+        img_bytes, img_mime = process_reference_image(reference_images[0])
+        if img_bytes:
+            import base64
+            # Kling API expects raw base64 string, NOT a data URI with mime type.
+            b64_data = base64.b64encode(img_bytes).decode('utf-8')
+            
+            base_endpoint = "image2video"
+            api_url = f"https://api.klingai.com/v1/videos/{base_endpoint}"
+            payload["image"] = b64_data
+
+    # 4. Submit Task
+    response = requests.post(api_url, headers=headers, json=payload)
+    if response.status_code != 200:
+        raise ValueError(f"Kling AI Task Submit Failed ({response.status_code}): {response.text}")
+    
+    resp_data = response.json()
+    if resp_data.get('code') != 0:
+        raise ValueError(f"Kling AI API Error: {resp_data.get('message')}")
+        
+    task_id = resp_data.get('data', {}).get('task_id')
+    if not task_id:
+        raise ValueError("Kling AI did not return a task_id.")
+
+    # 5. Poll Task Status
+    poll_url = f"https://api.klingai.com/v1/videos/{base_endpoint}/tasks/{task_id}"
+    timeout_sec = 1200 # 20 minutes max
+    poll_interval_sec = 10
+    started_at = time.time()
+
+    video_url = None
+    while time.time() - started_at < timeout_sec:
+        # Re-generate token to ensure it doesn't expire during long polling
+        poll_headers = {
+            "Authorization": f"Bearer {get_kling_jwt_token()}"
+        }
+        poll_resp = requests.get(poll_url, headers=poll_headers)
+        if poll_resp.status_code == 200:
+            p_data = poll_resp.json()
+            if p_data.get('code') == 0:
+                status = p_data.get('data', {}).get('task_status')
+                if status == 'succeed':
+                    video_results = p_data.get('data', {}).get('task_result', {}).get('videos', [])
+                    if video_results:
+                        video_url = video_results[0].get('url')
+                    break
+                elif status == 'failed':
+                    err_msg = p_data.get('data', {}).get('task_status_msg', 'Unknown Error')
+                    raise ValueError(f"Kling AI Video Generation Failed: {err_msg}")
+        
+        time.sleep(poll_interval_sec)
+
+    if not video_url:
+        raise ValueError("Kling AI Video generation timed out or returned no URL.")
+
+    # 6. Download Video
+    vid_resp = requests.get(video_url)
+    if vid_resp.status_code != 200:
+        raise ValueError("Failed to download generated video from Kling AI.")
+
+    video_bytes = vid_resp.content
+    mime_type = "video/mp4"
+
+    return video_bytes, mime_type, "kling-ai"
+
 def generate_midjourney_prompt(data):
     """
-    Builds a single, production-ready prompt by fusing:
-    - main body text
-    - referenced text
-    - referenced images
-
-    The output should be a fully integrated final prompt, not a summary or
-    a copy-paste of the source text with appended notes.
+    Executes a custom prompt generation task based on user-provided instructions (Execution Prompt)
+    and reference data (Knowledge & Brief).
     """
     client = get_ai_client()
     
@@ -531,134 +830,48 @@ def generate_midjourney_prompt(data):
             parts.append(types.Part.from_bytes(data=processed_bytes, mime_type=processed_mime))
             
     # 2. Extract Text Inputs
-    subject = (data.get('subject') or '').strip()
-    presets_raw = data.get('presets', [])
-    if not isinstance(presets_raw, list):
-        presets_raw = []
-    presets_list = [str(v).strip() for v in presets_raw if str(v).strip()]
-    presets = ", ".join(presets_list)
+    execution_prompt = (data.get('executionPrompt') or '').strip()
+    knowledge_and_brief = (data.get('knowledgeAndBrief') or '').strip()
     config = data.get('config', {})
-    media_type = data.get('media_type', 'image')
-    agent_instruction = (data.get('agentInstruction') or data.get('agent_instruction') or '').strip()
-    primary_prompt = (data.get('primaryPrompt') or data.get('primary_prompt') or '').strip()
-    secondary_text = (data.get('secondaryText') or data.get('secondary_text') or '').strip()
-    secondary_lines = [line.strip() for line in secondary_text.splitlines() if line.strip()]
     
     resolution = config.get('resolution', '')
-    ar = config.get('aspectRatio', '')
-    full_text_context = " ".join([
-        primary_prompt or '',
-        subject or '',
-        secondary_text or '',
-        presets or '',
-        agent_instruction or ''
-    ])
-    outputs_match = re.search(r'(\d+)\s*outputs?\b', full_text_context, flags=re.IGNORECASE)
+    outputs_match = re.search(r'(\d+)\s*outputs?\b', execution_prompt + ' ' + knowledge_and_brief, flags=re.IGNORECASE)
     requested_output_count = int(outputs_match.group(1)) if outputs_match else 1
     requested_output_count = max(1, min(6, requested_output_count))
     
     # 3. Construct synthesis instructions
-    if media_type == 'video':
-        system_instruction = """
-        You are an expert AI Video Prompt Engineer (e.g., for Runway Gen-3, Sora, or Luma).
-        Merge all provided inputs (main text, referenced texts, and reference images)
-        into production-ready prompt outputs.
-
-        Hard Requirements:
-        1. Output must be in English only.
-        2. Use this exact section schema per output:
-           Style:
-           Scene:
-           Cinematography:
-           Actions:
-           Dialogue:
-           Background sound:
-        3. Do NOT output analysis or markdown fences.
-        3. If MAIN BODY TEXT exists, keep it as the backbone and preserve its meaning and structure as much as possible.
-        4. Do not aggressively shorten MAIN BODY TEXT; enrich it with missing details from references.
-        5. You may rewrite only where needed for fluency/consistency.
-        6. Reflect all important details from all inputs unless directly conflicting.
-        7. If conflicts exist, resolve them into one coherent direction and keep the result internally consistent.
-        8. Emphasize motion, camera language, lighting, texture, and scene continuity.
-        """
-    else:
-        system_instruction = """
-        You are an expert Midjourney Portrait Prompt Engineer.
-        Merge all provided inputs (main text, referenced texts, and reference images)
-        into ONE complete, production-grade Midjourney prompt.
-
-        Hard Requirements:
-        1. Output raw text only, starting with "/imagine prompt: ".
-        2. Output must be one integrated final prompt, not multiple sections.
-        3. Do NOT output labels like "main", "reference", "summary", "notes", or "priority".
-        4. If MAIN BODY TEXT exists, keep it as the primary backbone and preserve wording/order as much as possible.
-        5. Do not over-compress MAIN BODY TEXT; integrate referenced details into it.
-        6. Rewrite only where necessary for coherence and consistency.
-        7. Include key details from every input source, resolving conflicts into one consistent art direction.
-        8. Do NOT include any --v parameter.
-        9. Do NOT include --ar parameter; it will be appended automatically.
-        """
-
-    if agent_instruction:
-        system_instruction = f"""{system_instruction}
-
-        Additional Creative Direction:
-        {agent_instruction}
-
-        Apply this direction while still synthesizing all provided inputs into one final prompt.
-        """
+    system_instruction = """
+    You are an expert AI Prompt Agent.
+    Your objective is to strictly execute the instructions provided in the EXECUTION PROMPT.
+    Use the PROVIDED KNOWLEDGE & BRIEF as your primary data and context to fulfill the instructions.
+    
+    Hard Requirements:
+    1. Output MUST be in the requested language (default to English if unspecified).
+    2. Do NOT output conversational filler like "Here is the prompt:" or "Understood.".
+    3. Output ONLY the final requested result based on the execution prompt.
+    4. If the execution prompt asks for a specific format (e.g., structured sections, lists, etc), follow it exactly.
+    """
 
     user_message = f"""
-    MAIN BODY TEXT:
-    {primary_prompt if primary_prompt else '(none)'}
+    EXECUTION PROMPT:
+    {execution_prompt if execution_prompt else 'Enhance the provided knowledge and brief into a production-ready prompt.'}
 
-    USER CONCEPT:
-    {subject if subject else '(none)'}
-
-    REFERENCED TEXT INPUTS:
-    {secondary_text if secondary_text else '(none)'}
-
-    PRESET KEYWORDS:
-    {presets if presets else '(none)'}
-
+    PROVIDED KNOWLEDGE & BRIEF:
+    {knowledge_and_brief if knowledge_and_brief else '(none)'}
+    
     TARGET RESOLUTION:
     {resolution if resolution else '(none)'}
-
+    
     REQUESTED OUTPUT COUNT:
     {requested_output_count}
-    """
-    if secondary_lines:
-        bullet_lines = "\n".join(f"- {line}" for line in secondary_lines)
-        user_message += f"""
-
-    REFERENCED TEXT LIST:
-    {bullet_lines}
-    """
-    if presets_list:
-        preset_lines = "\n".join(f"- {line}" for line in presets_list)
-        user_message += f"""
-
-    PRESET LIST:
-    {preset_lines}
-    """
-    if media_type == 'video':
-        user_message += f"""
-
-    OUTPUT FORMAT REQUIREMENT:
-    - Generate exactly {requested_output_count} output(s).
-    - Separate each output with one blank line.
-    - Each output must include all six labeled sections in this order:
-      Style, Scene, Cinematography, Actions, Dialogue, Background sound.
-    - Keep each output concise but production-ready and internally coherent.
     """
     
     # Text part must be appended as well
     parts.append(types.Part.from_text(text=user_message))
     
     try:
-        # Prompt model fallback chain:
-        # 1) Frontend-selected modelId, 2) env defaults, 3) safe backups.
-        default_prompt_model = "gemini-2.5-flash" if media_type == 'video' else "gemini-2.0-flash"
+        # Prompt model fallback chain. Prefer gemini-2.5-flash for prompts.
+        default_prompt_model = "gemini-2.5-flash"
         preferred_model = config.get('modelId') or os.environ.get("PROMPT_MODEL_ID", default_prompt_model)
         candidate_models = []
         for m in [preferred_model, os.environ.get("PROMPT_MODEL_ID"), "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
@@ -690,30 +903,8 @@ def generate_midjourney_prompt(data):
                 raise last_error
             raise ValueError("Prompt generation failed: no response text from candidate models.")
 
-        generated_text = response.text.replace('\n', ' ').strip()
-
-        # Safety net: keep user-authored main body when model over-compresses it.
-        # Exclude long meta-instruction documents (Situation/Task/Objective/Examples),
-        # because forcing them into the final output degrades prompt quality.
-        if primary_prompt:
-            def _normalize_text(v):
-                return re.sub(r'\s+', ' ', (v or '').strip().lower())
-            def _looks_like_meta_instruction(v):
-                lower = _normalize_text(v)
-                meta_markers = ['situation', 'task', 'objective', 'knowledge', 'examples', 'core prompt architecture']
-                return sum(1 for m in meta_markers if m in lower) >= 2
-
-            if (not _looks_like_meta_instruction(primary_prompt)) and (_normalize_text(primary_prompt) not in _normalize_text(generated_text)):
-                generated_text = f"{primary_prompt.strip()} {generated_text}".strip()
-
-        if media_type == 'image':
-            # Post-Processing: Append AR from config only for image mode
-            if ar and "--ar" not in generated_text:
-                generated_text += f" --ar {ar}"
-            
-            # Remove --v if AI hallucinates it
-            generated_text = re.sub(r'--v\s+[0-9.]+', '', generated_text).strip()
-
+        generated_text = response.text.strip()
+        
         return generated_text
 
     except Exception as e:

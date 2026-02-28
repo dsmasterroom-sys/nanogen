@@ -412,12 +412,22 @@ def generate_video_view(request):
 
         if not prompt:
             return JsonResponse({'error': 'Prompt is required'}, status=400)
+            
+        model_id = config.get('modelId', '')
 
-        video_bytes, mime_type, used_model = generate_video_with_veo(
-            prompt=prompt,
-            config=config,
-            reference_images=reference_images
-        )
+        if model_id.startswith('kling'):
+            from .services import generate_video_with_kling
+            video_bytes, mime_type, used_model = generate_video_with_kling(
+                prompt=prompt,
+                config=config,
+                reference_images=reference_images
+            )
+        else:
+            video_bytes, mime_type, used_model = generate_video_with_veo(
+                prompt=prompt,
+                config=config,
+                reference_images=reference_images
+            )
 
         ext = 'mp4'
         if isinstance(mime_type, str):
