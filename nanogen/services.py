@@ -542,6 +542,11 @@ def generate_video_with_veo(prompt, config, reference_images=None):
         except Exception:
             duration_seconds = 8
     duration_seconds = max(4, min(8, duration_seconds))
+    
+    # Veo 3.1 models ONLY support exactly 4, 6, or 8 seconds. 
+    # Invalid Argument is thrown for 5 or 7.
+    if duration_seconds % 2 != 0:
+        duration_seconds -= 1
 
     primary_prompt = extract_video_focused_prompt(prompt, duration_seconds=duration_seconds).strip()
     fallback_prompt = _compress_prompt(primary_prompt)
@@ -773,7 +778,7 @@ def generate_video_with_kling(prompt, config, reference_images=None):
         raise ValueError("Kling AI did not return a task_id.")
 
     # 5. Poll Task Status
-    poll_url = f"https://api.klingai.com/v1/videos/{base_endpoint}/tasks/{task_id}"
+    poll_url = f"https://api.klingai.com/v1/videos/{base_endpoint}/{task_id}"
     timeout_sec = 1200 # 20 minutes max
     poll_interval_sec = 10
     started_at = time.time()
@@ -797,7 +802,11 @@ def generate_video_with_kling(prompt, config, reference_images=None):
                 elif status == 'failed':
                     err_msg = p_data.get('data', {}).get('task_status_msg', 'Unknown Error')
                     raise ValueError(f"Kling AI Video Generation Failed: {err_msg}")
-        
+            else:
+                print(f"Kling API Polling Error Data: {p_data}")
+        else:
+            print(f"Kling API Polling HTTP Error {poll_resp.status_code}: {poll_resp.text}")
+            
         time.sleep(poll_interval_sec)
 
     if not video_url:

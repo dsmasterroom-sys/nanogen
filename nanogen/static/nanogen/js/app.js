@@ -541,7 +541,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 </div>
 
+                </div>
+
                 <!-- Floating Canvas Controls -->
+                <div class="absolute bottom-8 right-8 z-10 flex flex-col gap-2">
+                    <button id="workflowZoomInBtn" class="w-10 h-10 flex items-center justify-center bg-zinc-800/90 hover:bg-zinc-700 border border-zinc-600/80 rounded-full shadow-lg text-zinc-300 transition-colors backdrop-blur-md" title="Zoom In">
+                        <i data-lucide="plus" class="w-5 h-5"></i>
+                    </button>
+                    <button id="workflowZoomOutBtn" class="w-10 h-10 flex items-center justify-center bg-zinc-800/90 hover:bg-zinc-700 border border-zinc-600/80 rounded-full shadow-lg text-zinc-300 transition-colors backdrop-blur-md" title="Zoom Out">
+                        <i data-lucide="minus" class="w-5 h-5"></i>
+                    </button>
+                </div>
+
+                <!-- Floating Node Add Controls -->
                 <div class="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 relative">
                     <!-- Overlay Menu (Hidden by default) -->
                     <div id="nodeAddOverlay" class="hidden absolute bottom-full left-1/2 -translate-x-1/2 mb-4 bg-zinc-900/95 backdrop-blur-md border border-zinc-700/80 rounded-2xl p-4 shadow-2xl flex flex-col gap-4 animate-in fade-in zoom-in slide-in-from-bottom-4 duration-200 w-max">
@@ -1734,7 +1746,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const modelOptions = {
                     image: [
                         { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Image' },
-                        { value: 'gemini-2.0-flash-preview-image-generation', label: 'Gemini 2.0 Flash Image' }
+                        { value: 'gemini-2.0-flash-preview-image-generation', label: 'Gemini 2.0 Flash Image' },
+                        { value: 'gemini-3.1-flash-image', label: 'NanoBanana2 (Gemini 3.1 Flash Image)' }
                     ],
                     prompt: [
                         { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro (Prompt)' },
@@ -2410,10 +2423,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                         ${generatorKind === 'video' ? `
                                         <select class="node-gen-duration bg-zinc-800/95 border border-zinc-700 rounded-full px-3 py-1.5 text-xs text-zinc-200 outline-none" title="Duration">
                                             <option value="4" ${durationSeconds === 4 ? 'selected' : ''}>4s (Veo)</option>
-                                            <option value="5" ${durationSeconds === 5 ? 'selected' : ''}>5s (Kling/Veo)</option>
+                                            <option value="5" ${durationSeconds === 5 ? 'selected' : ''}>5s (Kling)</option>
                                             <option value="6" ${durationSeconds === 6 ? 'selected' : ''}>6s (Veo)</option>
-                                            <option value="7" ${durationSeconds === 7 ? 'selected' : ''}>7s (Veo)</option>
-                                            <option value="8" ${durationSeconds === 8 ? 'selected' : ''}>8s (Veo)</option>
+                                            <option value="8" ${durationSeconds === 8 ? 'selected' : ''}>8s (Veo / Default)</option>
                                             <option value="10" ${durationSeconds === 10 ? 'selected' : ''}>10s (Kling)</option>
                                         </select>` : ''}
                                     </div>
@@ -2605,6 +2617,50 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('addNodeVideoInputBtn').addEventListener('click', () => addVideoInputNode());
             document.getElementById('addNodeGeneratorBtn').addEventListener('click', () => addGeneratorNode(undefined, undefined, { generatorKind: 'image' }));
             document.getElementById('addNodeOutputBtn').addEventListener('click', () => addOutputNode());
+
+            const applyManualZoom = (zoomDelta) => {
+                if (!window.editor) return;
+                let newZoom = window.editor.zoom + zoomDelta;
+                if (newZoom < window.editor.zoom_min) newZoom = window.editor.zoom_min;
+                if (newZoom > window.editor.zoom_max) newZoom = window.editor.zoom_max;
+                if (newZoom === window.editor.zoom) return;
+
+                const rect = container.getBoundingClientRect();
+                const oldZoom = window.editor.zoom;
+                let focalX = rect.width / 2;
+                let focalY = rect.height / 2;
+
+                const nodes = container.querySelectorAll('.drawflow-node');
+                if (nodes && nodes.length > 0) {
+                    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                    nodes.forEach(n => {
+                        const x = parseFloat(n.style.left) || 0;
+                        const y = parseFloat(n.style.top) || 0;
+                        const w = n.offsetWidth || 0;
+                        const h = n.offsetHeight || 0;
+                        if (x < minX) minX = x;
+                        if (x + w > maxX) maxX = x + w;
+                        if (y < minY) minY = y;
+                        if (y + h > maxY) maxY = y + h;
+                    });
+                    const centerCanvasX = (minX + maxX) / 2;
+                    const centerCanvasY = (minY + maxY) / 2;
+                    focalX = window.editor.canvas_x + centerCanvasX * oldZoom;
+                    focalY = window.editor.canvas_y + centerCanvasY * oldZoom;
+                }
+
+                const newCanvasX = focalX - (focalX - window.editor.canvas_x) * (newZoom / oldZoom);
+                const newCanvasY = focalY - (focalY - window.editor.canvas_y) * (newZoom / oldZoom);
+
+                window.editor.zoom = newZoom;
+                window.editor.canvas_x = newCanvasX;
+                window.editor.canvas_y = newCanvasY;
+                window.editor.zoom_refresh();
+                if (window.editor.dispatch) window.editor.dispatch('zoom', window.editor.zoom);
+            };
+
+            document.getElementById('workflowZoomInBtn')?.addEventListener('click', () => applyManualZoom(0.1));
+            document.getElementById('workflowZoomOutBtn')?.addEventListener('click', () => applyManualZoom(-0.1));
 
             // Right-click menu logic
             const openContextMenu = (event) => {
